@@ -21,7 +21,7 @@ from . import config
 from .book import Book
 from .kalshi import Feed, KalshiError, Rest, dollars_c, iso_ts
 from .store import Recorder, Store, et_day
-from .strategy import Action, Order, State, decide
+from .strategy import WHOLE_CENT, Action, Order, State, decide, parse_ranges
 
 log = logging.getLogger("engine")
 PAPER_LATENCY_MS = 60
@@ -47,6 +47,8 @@ class Slot:
     mode: str = "paper"               # mode the window's orders were placed in
     busy: bool = False
     queue: float = 0.0                # paper: contracts ahead of us at our price
+    ranges: list = field(default_factory=lambda: list(WHOLE_CENT))   # the market's valid price grid
+    place_errors: int = 0             # rejected placements in a row (this window)
     trades: list = field(default_factory=list)
 
 
@@ -145,6 +147,13 @@ class Engine:
                     s.strike = float(m.get("floor_strike")) if m.get("floor_strike") not in (None, "") else None
                 except (TypeError, ValueError):
                     s.strike = None
+                if "price_ranges" not in m:
+                    try:
+                        m = dict(m, **{k: v for k, v in (await self.rest.market(s.ticker) or {}).items()
+                                       if k == "price_ranges"})
+                    except KalshiError:
+                        pass
+                s.ranges, s.place_errors = parse_ranges(m), 0
                 s.book, s.st, s.mode = Book(s.ticker), State(s.ticker), self.cfg["mode"]
                 self.by_ticker[s.ticker] = s
                 self.rec.write("market", [int(now * 1000), s.coin, s.ticker, s.open_ts, s.close_ts, s.strike, ""])
@@ -224,7 +233,7 @@ class Engine:
         view = s.book.view(side, own.price if own else None, (own.qty - own.filled) if own else 0)
         can_trade, why = self.can_trade(s)
         want = int(rule["contracts"]) if can_trade else max(st.held, 0)
-        acts = decide(rule, st, secs, now_ms, view, fav, want)
+        acts = decide(rule, st, secs, now_ms, view, fav, want, s.ranges)
         if not can_trade:
             if why and st.held == 0:
                 st.note = why
@@ -340,11 +349,26 @@ class Engine:
                 st.note = msg
                 return
             st.order = Order(a.side, a.price, qty, time.time() * 1000, cid)
-            r = await self.rest.place_bid(s.ticker, a.side, qty, a.price, s.close_ts - 2, cid)
+            try:
+                r = await self.rest.place_bid(s.ticker, a.side, qty, a.price, s.close_ts - 2, cid)
+            except Exception as e:                                    # noqa: BLE001
+                st.order = None                                       # nothing is resting: don't track a phantom
+                s.place_errors += 1
+                msg = str(e)
+                if "price" in msg.lower() and s.ranges != WHOLE_CENT:
+                    s.ranges = list(WHOLE_CENT)                       # grid mismatch: fall back to whole cents
+                    msg += " - switching this market to whole cents"
+                if s.place_errors >= 3:                               # stop hammering the API this window
+                    st.cooldown_until_ms = time.time() * 1000 + 60_000
+                    msg += " - pausing this market for 60 s"
+                st.note = "order rejected: " + str(e)
+                self.event("error", s.coin, f"bid {a.side.upper()} {a.price:g}c rejected: {msg}")
+                return
             if r.get("rejected"):
                 st.order = None
                 st.note = r["rejected"]
                 return
+            s.place_errors = 0
             st.order.order_id = r.get("order_id", "")
             if st.order.order_id:
                 self.order_kind[st.order.order_id] = "buy"

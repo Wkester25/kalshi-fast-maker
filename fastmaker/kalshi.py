@@ -207,7 +207,7 @@ class Rest:
     # ---- orders (V2 books are quoted in YES: buying NO at p = asking YES at 100 - p)
     async def place_bid(self, ticker: str, side: str, count: int, price_c: float, expires_ts: float,
                         client_id: str) -> dict:
-        yes_px = round(price_c if side == "yes" else 100 - price_c, 2)
+        yes_px = round(price_c if side == "yes" else 100 - price_c, 4)
         body = {"ticker": ticker, "side": "bid" if side == "yes" else "ask", "count": f"{int(count)}.00",
                 "price": f"{yes_px / 100:.4f}", "time_in_force": "good_till_canceled",
                 "self_trade_prevention_type": "taker_at_cross", "expiration_time": int(expires_ts),
@@ -233,7 +233,7 @@ class Rest:
 
     async def sell_ioc(self, ticker: str, side: str, count: int, min_price_c: float, client_id: str = "") -> dict:
         """Reduce-only immediate sell of what we hold, down to min_price_c."""
-        yes_px = round(min_price_c if side == "yes" else 100 - min_price_c, 2)
+        yes_px = round(min_price_c if side == "yes" else 100 - min_price_c, 4)
         body = {"ticker": ticker, "side": "ask" if side == "yes" else "bid", "count": f"{int(count)}.00",
                 "price": f"{yes_px / 100:.4f}", "time_in_force": "immediate_or_cancel", "reduce_only": True,
                 "self_trade_prevention_type": "taker_at_cross", "client_order_id": client_id or str(uuid.uuid4())}

@@ -12,10 +12,42 @@ Speed additions (only useful with a fast connection):
 """
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, field
 
-TICK = 0.1
+TICK = 0.1                                   # finest grid; real markets publish their own (see step_at)
+WHOLE_CENT = [(0.0, 100.0, 1.0)]             # valid on every Kalshi market
+
+
+def parse_ranges(m: dict | None) -> list[tuple[float, float, float]]:
+    """Kalshi's per-market price grid ('price_ranges', in dollars, in YES terms) as (start_c, end_c, step_c).
+    Falls back to whole cents, which every market accepts."""
+    out = []
+    for r in (m or {}).get("price_ranges") or []:
+        try:
+            a, b, st = (float(r[k]) * 100 for k in ("start", "end", "step"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if st > 0 and b > a:
+            out.append((a, b, st))
+    return sorted(out) or list(WHOLE_CENT)
+
+
+def step_at(ranges, side: str, price_c: float) -> float:
+    """Tick size where `side` trades at price_c (the grid is published in YES prices)."""
+    y = price_c if side == "yes" else 100 - price_c
+    for a, b, st in ranges or WHOLE_CENT:
+        if a - 1e-9 <= y < b - 1e-9:
+            return st
+    return (ranges or WHOLE_CENT)[-1][2] if y >= 50 else (ranges or WHOLE_CENT)[0][2]
+
+
+def snap(price_c: float, step: float, up: bool = False) -> float:
+    """Put a price on the grid (down by default)."""
+    n = price_c / step
+    n = math.ceil(n - 1e-6) if up else math.floor(n + 1e-6)
+    return round(n * step, 4)
 
 
 @dataclass
@@ -56,16 +88,20 @@ class Action:
     reason: str = ""
 
 
-def bid_price(bid: float, ask: float, hi: float) -> float:
-    """One tick above the best bid, at least one tick below the offer, below the band's top."""
-    p = round(min(round(bid / TICK) * TICK + TICK, round(ask / TICK) * TICK - TICK), 1)
-    if p <= bid - 1e-9 or p >= hi - 1e-9:
-        p = round(bid, 1)                       # spread is one tick, or the band's top: join the bid
+def bid_price(bid: float, ask: float, hi: float, step: float = TICK) -> float:
+    """One tick above the best bid, at least one tick below the offer, below the band's top,
+    always on the market's price grid."""
+    base = snap(bid, step)
+    p = min(round(base + step, 4), snap(ask - step, step))
+    if p <= bid + 1e-9 or p >= hi - 1e-9:
+        p = base                                # no room to improve: join the bid (on the grid)
     return p
 
 
-def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | None, want_qty: int) -> list[Action]:
-    """view: book.View for st.side (or for fav when no side yet), with our own order removed."""
+def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | None, want_qty: int,
+           ranges=None) -> list[Action]:
+    """view: book.View for st.side (or for fav when no side yet), with our own order removed.
+    ranges: the market's price grid (parse_ranges); None = 0.1c everywhere (tests)."""
     acts: list[Action] = []
     side = st.side or fav
     if side is None or view is None:
@@ -75,7 +111,7 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
     # ---- holding: the market stop
     if st.held > 0:
         if st.exiting:
-            acts.append(Action("sell", side, max((view.bid or 1) - 5, 1), st.held, "stop: still selling"))
+            acts.append(Action("sell", side, max(math.floor((view.bid or 1) - 5), 1), st.held, "stop: still selling"))
             return acts
         b = view.bid
         if b is not None and b < rule["stop_c"]:
@@ -83,7 +119,7 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
                 st.low_since_ms = now_ms
             if now_ms - st.low_since_ms >= rule["stop_ms"]:
                 st.exiting = True
-                acts.append(Action("sell", side, max(b - 5, 1), st.held,
+                acts.append(Action("sell", side, max(math.floor(b - 5), 1), st.held,
                                    f"stop: bid {b:g}c under {rule['stop_c']:g}c for {rule['stop_ms']} ms"))
                 return acts
             st.note = f"holding {st.held} {side.upper()}, bid {b:g}c below stop"
@@ -120,8 +156,8 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
                 return acts
     if now_ms < st.cooldown_until_ms:
         if st.order:
-            acts.append(Action("cancel", reason="cooling down after a pull"))
-        st.note = "cooling down after a pull"
+            acts.append(Action("cancel", reason="paused"))
+        st.note = st.note if st.note.startswith("order rejected") else "paused after a fast drop"
         return acts
 
     # ---- band
@@ -132,7 +168,8 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
         st.note = f"favourite {side.upper()} {b if b is not None else '-'}/{a if a is not None else '-'}, waiting for band"
         return acts
 
-    price = bid_price(b, a, rule["hi_c"])
+    step = step_at(ranges, side, b) if ranges else TICK
+    price = bid_price(b, a, rule["hi_c"], step)
     qty = want_qty - st.held
     if st.order:
         if b > st.order.price + 1e-9 and price > st.order.price + 1e-9:     # someone else outbid us

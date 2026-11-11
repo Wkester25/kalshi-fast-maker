@@ -87,3 +87,20 @@ def test_pull_on_fast_drop():
     b.snapshot({"yes_dollars_fp": [["0.9500", "10"]], "no_dollars_fp": [["0.0400", "10"]]}, 500)   # mid 97.5 -> 95.5
     acts = decide(r, st, 600.5, 500, b.view("yes", 97.1, 1), "yes", 1)
     assert [a.kind for a in acts] == ["cancel"] and st.cooldown_until_ms == 500 + r["pull_cooldown_ms"]
+
+
+def test_price_grid():
+    from fastmaker.strategy import parse_ranges, step_at
+    tapered = parse_ranges({"price_ranges": [{"start": "0.0000", "end": "0.1000", "step": "0.0010"},
+                                             {"start": "0.1000", "end": "0.9000", "step": "0.0100"},
+                                             {"start": "0.9000", "end": "1.0000", "step": "0.0010"}]})
+    assert step_at(tapered, "yes", 97.0) == 0.1 and step_at(tapered, "no", 97.0) == 0.1   # NO 97 = YES 3
+    assert step_at(tapered, "yes", 50.0) == 1.0
+    assert parse_ranges({}) == [(0.0, 100.0, 1.0)] and parse_ranges(None) == [(0.0, 100.0, 1.0)]
+    whole = parse_ranges({})
+    assert step_at(whole, "no", 97.0) == 1.0
+    assert bid_price(97.0, 98.0, 99.5, 1.0) == 97.0          # whole cents, 1c spread: join
+    assert bid_price(96.0, 98.0, 99.5, 1.0) == 97.0
+    assert bid_price(96.3, 98.0, 99.5, 1.0) == 97.0          # off-grid book level still yields a grid price
+    acts = decide(rule(), State("T"), 600, 0, make_book().view("yes"), "yes", 1, whole)
+    assert acts[0].price == 97.0

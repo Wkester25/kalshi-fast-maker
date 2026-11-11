@@ -18,7 +18,8 @@ def iso(ts):
 
 
 class FakeKalshi:
-    def __init__(self, secs_into_window: float = 600, seed: int = 7):
+    def __init__(self, secs_into_window: float = 600, seed: int = 7, ranges=None, whole_cent_only=False):
+        self.whole_cent_only = whole_cent_only
         self.rng = random.Random(seed)
         self.open_ts = time.time() - secs_into_window
         self.close_ts = self.open_ts + 900
@@ -36,6 +37,8 @@ class FakeKalshi:
             lvl = [96.2, 97.0, 97.4, 98.1, 98.3, 95.5, 98.6][i % 7]
             self.markets[series] = {"ticker": t, "open_time": iso(self.open_ts), "close_time": iso(self.close_ts),
                                     "floor_strike": 100.0 + i, "exchange_index": 0, "result": "", "status": "open"}
+            if ranges:
+                self.markets[series]["price_ranges"] = ranges
             yes_bid = lvl if fav_yes else round(100 - lvl - 1, 1)
             self.books[t] = {"yes": {yes_bid: 150.0, round(yes_bid - 0.5, 1): 60.0},
                              "no": {round(100 - yes_bid - 1, 1): 90.0, round(100 - yes_bid - 1.5, 1): 40.0}}
@@ -77,6 +80,9 @@ class FakeKalshi:
 
     async def place(self, r):
         body = await r.json()
+        if self.whole_cent_only and abs(float(body["price"]) * 100 - round(float(body["price"]) * 100)) > 1e-6:
+            self.rejected = getattr(self, "rejected", 0) + 1
+            return web.json_response({"error": {"code": "invalid_price", "message": "invalid price"}}, status=400)
         oid = f"o{len(self.orders) + 1}"
         self.orders.append(dict(body, order_id=oid))
         return web.json_response({"order": {"order_id": oid, "fill_count_fp": "0.00"}})

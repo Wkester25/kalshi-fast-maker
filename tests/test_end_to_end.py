@@ -14,6 +14,11 @@ from fastmaker.web import build
 from tests.fake_kalshi import FakeKalshi, point_at, serve
 
 
+TAPERED = [{"start": "0.0000", "end": "0.1000", "step": "0.0010"},
+           {"start": "0.1000", "end": "0.9000", "step": "0.0100"},
+           {"start": "0.9000", "end": "1.0000", "step": "0.0010"}]
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -50,7 +55,7 @@ def test_paper_then_live(home):
     async def go():
         port = free_port()
         point_at(port)
-        fake = FakeKalshi(secs_into_window=600)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
         runner = await serve(fake, port)
         config.save_key("test-key-id", pem())
         cfg = config.load()
@@ -154,7 +159,7 @@ def test_window_close_settles(home, monkeypatch):
     async def go():
         port = free_port()
         point_at(port)
-        fake = FakeKalshi(secs_into_window=600)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
         runner = await serve(fake, port)
         config.save_key("k", pem())
         cfg = config.load()
@@ -179,6 +184,35 @@ def test_window_close_settles(home, monkeypatch):
             res = eng.store.recent_results()
             assert len(res) == 1 and res[0]["outcome"] == "won" and abs(res[0]["pnl_c"] - 2.9) < 1e-6
             assert not eng.pending
+        finally:
+            await eng.stop()
+            await runner.cleanup()
+    asyncio.run(go())
+
+
+def test_rejected_price_falls_back_to_whole_cents(home):
+    """A market that advertises 0.1c steps but rejects them: no phantom order, then whole cents."""
+    async def go():
+        port = free_port()
+        point_at(port)
+        deci = [{"start": "0.0000", "end": "1.0000", "step": "0.0010"}]
+        fake = FakeKalshi(secs_into_window=600, ranges=deci, whole_cent_only=True)
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="live", trading=True)
+        eng = Engine(cfg)
+        await eng.start()
+        try:
+            gold = eng.slots["GOLD"]                      # NO favourite at 96.2 bid
+            assert await wait_for(lambda: any(o["ticker"] == gold.ticker for o in fake.orders), 5), \
+                (gold.st and gold.st.note)
+            o = next(o for o in fake.orders if o["ticker"] == gold.ticker)
+            assert abs(float(o["price"]) * 100 - round(float(o["price"]) * 100)) < 1e-6
+            assert gold.st.order is not None and gold.st.order.order_id
+            assert getattr(fake, "rejected", 0) >= 1
+            await asyncio.sleep(0.5)
+            assert fake.rejected <= 15                    # one rejection per market, not a storm
         finally:
             await eng.stop()
             await runner.cleanup()
