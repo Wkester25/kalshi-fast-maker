@@ -311,3 +311,62 @@ def test_other_bots_fills_and_orders_are_left_alone(home):
             await eng.stop()
             await runner.cleanup()
     asyncio.run(go())
+
+
+def test_restart_mid_window_and_recheck(home):
+    """Restart while holding: the position is rebuilt from Kalshi's fills; a wrong row is corrected."""
+    async def go():
+        port = free_port()
+        point_at(port)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="live", trading=True)
+        eng = Engine(cfg)
+        await eng.start()
+        gold = eng.slots["GOLD"]
+        assert await wait_for(lambda: gold.st and gold.st.order and gold.st.order.order_id, 5)
+        oid, px = gold.st.order.order_id, gold.st.order.price
+        fake.add_rest_fill(gold.ticker, oid, "ask", round(100 - px, 1), 1)          # it filled...
+        await eng.stop()                                                           # ...and we restart
+        eng2 = Engine(cfg)
+        await eng2.start()
+        try:
+            g2 = eng2.slots["GOLD"]
+            assert await wait_for(lambda: g2.st and g2.st.held == 1, 6), g2.st and g2.st.note
+            assert g2.st.side == "no" and abs(g2.st.cost_c - px) < 1e-6
+
+            # a wrong row like the one a restart used to leave behind
+            eng2.store.result("live", "GOLD", gold.ticker, "no", 1, 0.0, 0, "won", 100.0)
+            fake.markets["KXGOLD15M"]["result"] = "no"
+            rep = await eng2.recheck_results()
+            assert rep["checked"] == 1 and len(rep["changes"]) == 1
+            row = eng2.store.recent_results(1)[0]
+            assert row["outcome"] == "won" and abs(row["pnl_c"] - round(100 - px, 2)) < 1e-6
+            rep = await eng2.recheck_results()                                    # second run: nothing to fix
+            assert rep["changes"] == []
+        finally:
+            await eng2.stop()
+            await runner.cleanup()
+    asyncio.run(go())
+
+
+def test_remove_result_row(home):
+    async def go():
+        cfg = config.load()
+        cfg["env"] = "fake"
+        point_at(free_port())
+        eng = Engine(cfg)
+        client = TestClient(TestServer(build(eng)))
+        await client.start_server()
+        try:
+            await client.post("/setup", json={"password": "correct horse"})
+            eng.store.result("paper", "GOLD", "T", "no", 1, 97.0, 0, "won", 3.0)
+            rid = (await (await client.get("/api/state")).json())["results"][0]["id"]
+            assert (await client.post("/api/results/delete", json={"id": rid})).status == 200
+            assert (await (await client.get("/api/state")).json())["results"] == []
+        finally:
+            await client.close()
+            await eng.stop()
+    asyncio.run(go())

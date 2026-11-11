@@ -89,7 +89,7 @@ let toastT = 0;
 function toast(text, ok) {
   const t = $("#toast");
   t.textContent = text; t.className = "toast on " + (ok ? "ok" : "err");
-  clearTimeout(toastT); toastT = setTimeout(() => (t.className = "toast"), ok ? 2500 : 7000);
+  clearTimeout(toastT); toastT = setTimeout(() => (t.className = "toast"), ok ? Math.max(2500, text.length * 60) : 7000);
 }
 async function quickSave(body, label) {
   const r = await api("/api/settings", body);
@@ -108,6 +108,29 @@ for (const g of ["crypto", "commodity"]) {
   const q = $("#q-" + g);
   q.onchange = async () => { q.dataset.busy = "1"; await setRule(g, q.checked); delete q.dataset.busy; };
 }
+
+/* ---------------- results: re-check with Kalshi, remove a row */
+$("#recheck").onclick = async () => {
+  const b = $("#recheck"); b.disabled = true; b.textContent = "Checking…";
+  const r = await api("/api/results/recheck", {});
+  b.disabled = false; b.textContent = "Re-check with Kalshi";
+  if (r.error) { toast(r.error, false); return; }
+  const fixed = r.changes.map((c) => `${c.coin} ${usd(c.was_c)} → ${usd(c.now_c)}`).join(", ");
+  let msg = `Checked ${r.checked} live result${r.checked === 1 ? "" : "s"}: ` + (r.changes.length ? `corrected ${fixed}` : "all match Kalshi");
+  if (r.unchecked.length) msg += ` · ${r.unchecked.length} couldn't be checked (see Activity)`;
+  toast(msg, true);
+  if (r.unchecked.length) console.info("not checked:", r.unchecked);
+  refresh();
+};
+$("#res").addEventListener("click", async (e) => {
+  const b = e.target.closest(".row-del"); if (!b) return;
+  const tr = b.closest("tr");
+  const what = [...tr.children].slice(0, 7).map((td) => td.textContent.trim()).filter(Boolean).join(" · ");
+  if (!confirm(`Remove this result from the record?\n\n${what}\n\nToday's P&L and the loss limits will no longer count it.`)) return;
+  const r = await api("/api/results/delete", { id: +b.dataset.rid });
+  toast(r.ok ? "Result removed" : r.error, !!r.ok);
+  refresh();
+});
 
 /* ---------------- render */
 function render() {
@@ -176,8 +199,9 @@ function render() {
       <td class="coin">${esc(r.coin)}</td><td><span class="tag ${r.side}">${String(r.side).toUpperCase()}</span></td>
       <td class="n">${r.bought}</td><td class="n">${px(r.avg_px)}¢</td>
       <td><span class="tag ${r.outcome}">${r.outcome}</span></td>
-      <td class="n ${cls(r.pnl_c)}">${usd(r.pnl_c)}</td></tr>`).join("")
-    : `<tr><td colspan="7" class="empty">No finished trades yet.</td></tr>`;
+      <td class="n ${cls(r.pnl_c)}">${usd(r.pnl_c)}</td>
+      <td class="n"><button class="icon-btn row-del" data-rid="${r.id}" title="Remove this result" aria-label="Remove this result">×</button></td></tr>`).join("")
+    : `<tr><td colspan="8" class="empty">No finished trades yet.</td></tr>`;
 
   $("#daily").innerHTML = s.daily.length ? s.daily.map((d) => `<tr><td class="num">${d.day}</td><td class="n">${d.trades}</td><td class="n">${d.contracts}</td>
       <td class="n ${cls(d.pnl_c)}">${usd(d.pnl_c)}</td><td class="n ${cls(d.pnl_c)}">${d.contracts ? cents(d.pnl_c / d.contracts) : "—"}</td></tr>`).join("")

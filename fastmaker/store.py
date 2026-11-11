@@ -27,6 +27,7 @@ class Store:
                 ts REAL, day TEXT, mode TEXT, coin TEXT, ticker TEXT, side TEXT,
                 bought INTEGER, avg_px REAL, sold INTEGER, outcome TEXT, pnl_c REAL);
             CREATE TABLE IF NOT EXISTS events(ts REAL, level TEXT, coin TEXT, msg TEXT);
+            CREATE TABLE IF NOT EXISTS orders(order_id TEXT PRIMARY KEY, cid TEXT, ticker TEXT, kind TEXT, ts REAL);
             CREATE INDEX IF NOT EXISTS r_day ON results(day, mode);
             CREATE INDEX IF NOT EXISTS e_ts ON events(ts);
         """)
@@ -47,10 +48,38 @@ class Store:
         return [{"ts": r[0], "level": r[1], "coin": r[2], "msg": r[3]} for r in rows]
 
     def recent_results(self, n: int = 40) -> list[dict]:
-        rows = self.db.execute("SELECT ts, mode, coin, side, bought, avg_px, sold, outcome, pnl_c FROM results "
-                               "ORDER BY ts DESC LIMIT ?", (n,)).fetchall()
-        k = ["ts", "mode", "coin", "side", "bought", "avg_px", "sold", "outcome", "pnl_c"]
+        rows = self.db.execute("SELECT rowid, ts, mode, coin, ticker, side, bought, avg_px, sold, outcome, pnl_c "
+                               "FROM results ORDER BY ts DESC LIMIT ?", (n,)).fetchall()
+        k = ["id", "ts", "mode", "coin", "ticker", "side", "bought", "avg_px", "sold", "outcome", "pnl_c"]
         return [dict(zip(k, r)) for r in rows]
+
+    def live_results_since(self, ts: float) -> list[dict]:
+        rows = self.db.execute("SELECT rowid, ticker, side, bought, avg_px, sold, outcome, pnl_c, coin FROM results "
+                               "WHERE mode='live' AND ts>=? ORDER BY ts", (ts,)).fetchall()
+        k = ["id", "ticker", "side", "bought", "avg_px", "sold", "outcome", "pnl_c", "coin"]
+        return [dict(zip(k, r)) for r in rows]
+
+    def update_result(self, rid: int, **f) -> None:
+        cols = ", ".join(f"{k}=?" for k in f)
+        self.db.execute(f"UPDATE results SET {cols} WHERE rowid=?", (*f.values(), rid))
+        self.db.commit()
+
+    def delete_result(self, rid: int) -> bool:
+        n = self.db.execute("DELETE FROM results WHERE rowid=?", (rid,)).rowcount
+        self.db.commit()
+        return n > 0
+
+    # our own orders, so fills can be recognised after a restart (Kalshi's fill records carry no client id)
+    def add_order(self, order_id: str, cid: str, ticker: str, kind: str) -> None:
+        self.db.execute("INSERT OR REPLACE INTO orders VALUES(?,?,?,?,?)", (order_id, cid, ticker, kind, time.time()))
+        self.db.commit()
+
+    def order_kinds(self, days: float = 7) -> dict[str, str]:
+        rows = self.db.execute("SELECT order_id, kind FROM orders WHERE ts>=?", (time.time() - days * 86400,)).fetchall()
+        return dict(rows)
+
+    def orders_for(self, ticker: str) -> dict[str, str]:
+        return dict(self.db.execute("SELECT order_id, kind FROM orders WHERE ticker=?", (ticker,)).fetchall())
 
     def summary(self, mode: str, day: str | None = None) -> dict:
         q = "SELECT COUNT(*), COALESCE(SUM(pnl_c),0), SUM(outcome='lost'), SUM(outcome='sold'), " \

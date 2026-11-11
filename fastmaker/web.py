@@ -269,6 +269,23 @@ def build(engine) -> web.Application:
         return web.json_response({"ok": True, "cash_usd": round(sum(cash.values()) / 100, 2),
                                   "rtt_ms": round((time.perf_counter() - t0) * 1000), "key_id": engine.rest.key_id[:8] + "…"})
 
+    async def results_recheck(_):
+        if not engine.rest.has_key:
+            return web.json_response({"error": "add an API key first"}, status=400)
+        return web.json_response(await engine.recheck_results())
+
+    async def results_delete(request):
+        body = await request.json()
+        try:
+            rid = int(body.get("id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "which row?"}, status=400)
+        if not engine.store.delete_result(rid):
+            return web.json_response({"error": "row not found"}, status=404)
+        engine._today_key = None
+        engine.event("warn", "", f"result row {rid} removed by hand")
+        return web.json_response({"ok": True})
+
     async def stop_all(_):
         await engine.halt("Stop all pressed")
         return web.json_response({"ok": True})
@@ -300,6 +317,8 @@ def build(engine) -> web.Application:
     app.router.add_post("/api/keys", keys)
     app.router.add_post("/api/keys/test", key_test)
     app.router.add_post("/api/stop-all", stop_all)
+    app.router.add_post("/api/results/recheck", results_recheck)
+    app.router.add_post("/api/results/delete", results_delete)
     app.router.add_post("/api/password", password)
     app.router.add_static("/static/", STATIC)
     async def favicon(_):

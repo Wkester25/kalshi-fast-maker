@@ -33,6 +33,38 @@ def taker_fee_c(price_c: float, n: int = 1) -> float:
     return math.ceil(round(7 * p * (1 - p) * n, 6))
 
 
+def rebuild_result(fills: list[dict], side: str, result: str) -> dict | None:
+    """One market's result from Kalshi's fill records. We only buy `side` and only sell what we bought, so
+    a fill on the YES book's bid is a buy of YES or a sell of NO (and the ask the other way round)."""
+    if not fills:
+        return None
+    bought = sold = 0
+    cost = proceeds = 0.0
+    for f in fills:
+        n = int(round(float(f.get("count_fp") or f.get("count") or 0)))
+        if n <= 0:
+            continue
+        yes_px = dollars_c(f.get("yes_price_dollars", 0))
+        px = yes_px if side == "yes" else 100 - yes_px
+        fee = float(f.get("fee_cost") or 0) * 100
+        book = f.get("book_side")
+        if book in ("bid", "ask"):
+            is_buy = (book == "bid") == (side == "yes")
+        else:                                            # older records: legacy action field
+            is_buy = str(f.get("action", "buy")).startswith("buy")
+        if is_buy:
+            bought += n
+            cost += n * px + fee
+        else:
+            sold += n
+            proceeds += n * px - fee
+    held = max(bought - sold, 0)
+    payout = held * 100 if result == side else 0
+    outcome = "sold" if sold and not held else ("won" if result == side else "lost")
+    return {"bought": bought, "sold": sold, "avg_px": round(cost / bought, 2) if bought else 0,
+            "outcome": outcome, "pnl_c": round(payout + proceeds - cost, 2)}
+
+
 @dataclass
 class Slot:
     coin: str
@@ -72,7 +104,7 @@ class Engine:
         self.index: dict[str, dict] = {}
         self.seen_fills: set[str] = set()
         self._foreign_seen: set[str] = set()
-        self.order_kind: dict[str, str] = {}      # order_id -> "buy"/"sell" (fallback when no client id)
+        self.order_kind: dict[str, str] = self.store.order_kinds()   # order_id -> buy/sell, kept across restarts
         self.halted = ""
         self.started = time.time()
         self.feed.indices = list(config.CF_INDEX.values())
@@ -169,6 +201,9 @@ class Engine:
                 s.ranges, s.place_errors = parse_ranges(m), 0
                 s.book, s.st, s.mode = Book(s.ticker), State(s.ticker), self.cfg["mode"]
                 self.by_ticker[s.ticker] = s
+                if self.store.orders_for(s.ticker):          # we traded this market before a restart
+                    s.busy = True                             # no new bids until the position is rebuilt
+                    asyncio.create_task(self._recover_market(s))
                 self.rec.write("market", [int(now * 1000), s.coin, s.ticker, s.open_ts, s.close_ts, s.strike, ""])
                 await self.feed.add_markets([s.ticker])
             await asyncio.sleep(1.0)
@@ -387,6 +422,7 @@ class Engine:
             st.order.order_id = r.get("order_id", "")
             if st.order.order_id:
                 self.order_kind[st.order.order_id] = "buy"
+                self.store.add_order(st.order.order_id, cid, s.ticker, "buy")
         else:
             st.order = Order(a.side, a.price, qty, time.time() * 1000 + PAPER_LATENCY_MS, cid)
             s.queue = view.bid_size if joining else 0.0
@@ -427,6 +463,7 @@ class Engine:
             r = await self.rest.sell_ioc(s.ticker, a.side, st.held, a.price, "fms-" + uuid.uuid4().hex[:20])
             if r.get("order_id"):
                 self.order_kind[r["order_id"]] = "sell"
+                self.store.add_order(r["order_id"], "", s.ticker, "sell")
             # fills (and their prices) arrive on the feed; the response is logged only
             self.event("stop", s.coin, f"live stop sell {r.get('fill_count')}/{st.held} {a.side.upper()} "
                                         f"(floor {a.price:g}c) - {a.reason}")
@@ -481,17 +518,16 @@ class Engine:
             if o.filled >= o.qty:
                 s.st.order = None
 
-    def _live_fill(self, m: dict):
-        tid = m.get("trade_id", "")
+    def _live_fill(self, m: dict) -> bool:
+        """Apply one of our fills to its market. Returns False if it can't be placed yet (market not tracked)."""
+        tid = m.get("trade_id") or m.get("fill_id") or ""
         if not tid or tid in self.seen_fills:
-            return
-        self.seen_fills.add(tid)
+            return True
         s = self.by_ticker.get(m.get("market_ticker", "")) or next(
             (p.slot for p in self.pending if p.slot.ticker == m.get("market_ticker")), None)
         if not s or not s.st:
-            if str(m.get("client_order_id") or "").startswith(("fmb-", "fms-")):
-                self.event("warn", "", f"fill for an untracked market {m.get('market_ticker')}")
-            return
+            return False                                  # not marked seen: a later reconcile can still apply it
+        self.seen_fills.add(tid)
         cid = m.get("client_order_id") or ""
         oid = m.get("order_id", "")
         # the fill feed reports every fill on the account: only ours count (another bot may trade it too)
@@ -503,13 +539,14 @@ class Engine:
             if tid not in self._foreign_seen:
                 self._foreign_seen.add(tid)
                 log.info("ignoring a fill that isn't ours: %s %s", m.get("market_ticker"), cid or oid)
-            return
+            return True
         n = int(float(m.get("count_fp") or 0))
         # we only ever hold one side per window; trust that over the message's own fields
-        side = s.st.side or next((x for x in (m.get("purchased_side"), m.get("side")) if x in ("yes", "no")), None)
+        side = s.st.side or next((x for x in (m.get("purchased_side"), m.get("outcome_side"), m.get("side"))
+                                  if x in ("yes", "no")), None)
         if side is None:
             self.event("warn", s.coin, f"fill with unknown side ignored: {m}")
-            return
+            return True
         s.st.side = side
         yes_px = dollars_c(m.get("yes_price_dollars", 0))
         px = yes_px if side == "yes" else 100 - yes_px
@@ -525,6 +562,7 @@ class Engine:
             s.st.sold += n
             s.st.held = max(s.st.held - n, 0)
             s.st.proceeds_c += n * px - fee
+        return True
 
     def _apply_buy(self, s: Slot, n: int, px: float, fee: float):
         st = s.st
@@ -533,15 +571,32 @@ class Engine:
         st.side = st.side or s.book.favourite()
         self.event("fill", s.coin, f"{s.mode} filled {n} {st.side.upper()} at {px:g}c")
 
+    async def _recover_market(self, s: Slot):
+        """After a restart mid-window: rebuild what we hold here from Kalshi's fills of our own orders."""
+        try:
+            ours = self.store.orders_for(s.ticker)
+            fills = [f for f in await self.rest.fills(ticker=s.ticker) if f.get("order_id") in ours]
+            for f in sorted(fills, key=lambda f: f.get("ts") or 0):
+                f.setdefault("market_ticker", f.get("ticker"))
+                self._live_fill(f)
+            if s.st and (s.st.held or s.st.sold):
+                self.event("info", s.coin, f"picked up after restart: holding {s.st.held} {s.st.side.upper()}"
+                                           f" (cost {s.st.cost_c:.1f}c)")
+        except Exception as e:                                         # noqa: BLE001
+            self.event("warn", s.coin, f"could not rebuild position after restart: {e} - check Kalshi")
+        finally:
+            s.busy = False
+
     async def _reconcile_fills(self):
         """After a reconnect, pick up fills we may have missed while the feed was down."""
         try:
             since = int(min([s.open_ts for s in self.by_ticker.values()] or [time.time() - 900]))
-            r = await self.rest.request("GET", "/portfolio/fills", {"min_ts": since, "limit": 200})
-            for f in r.get("fills") or []:
+            fills = await self.rest.fills(min_ts=since)
+            mine = [f for f in fills if f.get("order_id") in self.order_kind]
+            for f in sorted(mine, key=lambda f: f.get("ts") or 0):
                 f.setdefault("market_ticker", f.get("ticker"))
-                if f.get("trade_id") and f["trade_id"] not in self.seen_fills:
-                    self._live_fill(f)
+                self._live_fill(f)
+
         except Exception as e:                                         # noqa: BLE001
             self.event("warn", "", f"fill check after reconnect failed: {e}")
 
@@ -578,6 +633,45 @@ class Engine:
             self.rec.write("market", [int(now * 1000), s.coin, s.ticker, s.open_ts, s.close_ts, s.strike, res])
             self.event("result", s.coin, f"{s.mode} {st.side.upper()} x{bought} {outcome} {pnl:+.1f}c")
             self.pending.remove(p)
+
+    # ------------------------------------------------------------ re-check results against Kalshi
+    async def recheck_results(self, days: float = 3) -> dict:
+        """Rebuild each recent live result from Kalshi's own fills and the market's official result,
+        and correct rows that don't match. Paper rows can't be checked."""
+        rows = self.store.live_results_since(time.time() - days * 86400)
+        changes, unchecked = [], []
+        for row in rows:
+            t = row["ticker"]
+            try:
+                fills = await self.rest.fills(ticker=t)
+                m = await self.rest.market(t) or {}
+            except KalshiError as e:
+                unchecked.append(f"{row['coin']}: {e}")
+                continue
+            ours = self.store.orders_for(t)
+            if ours:                                      # only this program's orders, when we know them
+                fills = [f for f in fills if f.get("order_id") in ours]
+            res = str(m.get("result", "")).lower()
+            calc = rebuild_result(fills, row["side"], res)
+            if calc is None:
+                unchecked.append(f"{row['coin']} {t}: no fills on Kalshi (older than its history window?)")
+                continue
+            if res not in ("yes", "no"):
+                unchecked.append(f"{row['coin']} {t}: Kalshi has no result yet")
+                continue
+            old = (row["bought"], row["sold"], row["outcome"], round(row["pnl_c"], 2))
+            new = (calc["bought"], calc["sold"], calc["outcome"], round(calc["pnl_c"], 2))
+            if old != new:
+                self.store.update_result(row["id"], **calc)
+                changes.append({"coin": row["coin"], "ticker": t, "was_c": row["pnl_c"], "now_c": calc["pnl_c"],
+                                "was": f"{row['bought']} bought, {row['outcome']}",
+                                "now": f"{calc['bought']} bought, {calc['outcome']}"})
+                self.event("warn", row["coin"], f"result corrected from Kalshi: {row['pnl_c']:+.1f}c -> "
+                                                 f"{calc['pnl_c']:+.1f}c ({t})")
+        for u in unchecked:
+            self.event("info", "", f"re-check: {u}")
+        self._today_key = None                            # limits use the corrected numbers at once
+        return {"checked": len(rows), "changes": changes, "unchecked": unchecked}
 
     # ------------------------------------------------------------ status for the web page
     def status(self) -> dict:

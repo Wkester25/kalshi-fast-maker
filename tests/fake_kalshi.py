@@ -24,6 +24,7 @@ class FakeKalshi:
         self.open_ts = time.time() - secs_into_window
         self.close_ts = self.open_ts + 900
         self.orders: list[dict] = []
+        self.rest_fills: list[dict] = []
         self.foreign_orders: list[dict] = []             # another bot's orders on the same account
         self.cancels: list[str] = []
         self.ws_auth: list[dict] = []
@@ -72,7 +73,19 @@ class FakeKalshi:
             await ws.send_json(msg)
 
     async def empty_fills(self, r):
-        return web.json_response({"fills": []})
+        """REST fills, in Kalshi's REST shape (no client order id)."""
+        t, since = r.query.get("ticker"), float(r.query.get("min_ts") or 0)
+        out = [f for f in self.rest_fills if (not t or f["ticker"] == t) and f["ts"] >= since]
+        return web.json_response({"fills": out, "cursor": ""})
+
+    def add_rest_fill(self, ticker, order_id, book_side, yes_price, count, fee=0.0):
+        n = len(self.rest_fills) + 1
+        self.rest_fills.append({"fill_id": f"rf{n}", "trade_id": f"rf{n}", "order_id": order_id, "ticker": ticker,
+                                "market_ticker": ticker, "book_side": book_side,
+                                "outcome_side": "yes" if book_side == "bid" else "no", "count_fp": f"{count:.2f}",
+                                "yes_price_dollars": f"{yes_price / 100:.4f}",
+                                "no_price_dollars": f"{(100 - yes_price) / 100:.4f}", "fee_cost": f"{fee:.4f}",
+                                "is_taker": False, "ts": int(time.time())})
 
     async def cancel_all(self, r):
         self.cancels.append("*")

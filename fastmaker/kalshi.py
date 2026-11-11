@@ -252,6 +252,25 @@ class Rest:
         return await self.request("DELETE", f"/portfolio/events/orders/{order_id}", {"market_ticker": ticker},
                                   timeout=4)
 
+    async def fills(self, ticker: str | None = None, min_ts: int | None = None) -> list[dict]:
+        """All fills (every page) for a market and/or since a time."""
+        out, cursor = [], None
+        for _ in range(20):
+            params: dict = {"limit": 1000}
+            if ticker:
+                params["ticker"] = ticker
+            if min_ts:
+                params["min_ts"] = int(min_ts)
+            if cursor:
+                params["cursor"] = cursor
+            r = await self.request("GET", "/portfolio/fills", params, timeout=8)
+            page = r.get("fills") or []
+            out += page
+            cursor = r.get("cursor")
+            if not cursor or not page:
+                break
+        return out
+
     async def cancel_mine(self, prefix: str = "fm") -> tuple[int, list[str]]:
         """Cancel only this program's resting orders (client ids start with `prefix`); other bots on the
         same account are left alone. Returns (cancelled, errors)."""

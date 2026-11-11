@@ -147,3 +147,16 @@ def test_stop_zero_holds():
     for t in (0, 5000, 60000):
         assert decide(r, st, 700, t, b.view("yes"), "yes", 1) == []
     assert not st.exiting and "no stop" in st.note
+
+
+def test_rebuild_result_from_kalshi_fills():
+    from fastmaker.engine import rebuild_result
+    f = lambda book, yes_px, n, fee=0: {"book_side": book, "yes_price_dollars": f"{yes_px / 100:.4f}",   # noqa: E731
+                                        "count_fp": f"{n}.00", "fee_cost": f"{fee:.4f}"}
+    # bought 2 NO at 96.3 (ask side of the YES book), won
+    r = rebuild_result([f("ask", 3.7, 2)], "no", "no")
+    assert r["bought"] == 2 and r["outcome"] == "won" and abs(r["pnl_c"] - 7.4) < 1e-6
+    # bought 1 YES at 97, sold it at 40 (taker fee 2c), market then went NO
+    r = rebuild_result([f("bid", 97, 1), f("ask", 40, 1, 0.02)], "yes", "no")
+    assert (r["bought"], r["sold"], r["outcome"]) == (1, 1, "sold") and abs(r["pnl_c"] - (40 - 2 - 97)) < 1e-6
+    assert rebuild_result([], "yes", "yes") is None
