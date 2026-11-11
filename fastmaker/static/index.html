@@ -38,6 +38,10 @@
     <div class="card control">
       <label class="sw lg"><input type="checkbox" id="trading"><span class="track"></span><span class="big" id="trading-l">Trading off</span></label>
       <div class="seg" id="mode-seg"><button data-m="paper">Paper</button><button data-m="live">Live</button></div>
+      <div class="rule-sw">
+        <label class="sw"><input type="checkbox" id="q-crypto"><span class="track"></span><span>Crypto</span></label>
+        <label class="sw"><input type="checkbox" id="q-commodity"><span class="track"></span><span>Commodities</span></label>
+      </div>
       <span class="why" id="ctl-why"></span>
       <div class="spacer"></div>
       <button class="btn danger" id="stopall">Stop all &amp; cancel orders</button>
@@ -110,7 +114,7 @@
         </div>
       </div>
     </div>
-    <div class="savebar"><button class="btn primary" id="save">Save settings</button><button class="btn" id="revert">Discard changes</button><span class="msg" id="save-msg"></span></div>
+    <div class="savebar sticky"><button class="btn primary" id="save">Save settings</button><button class="btn" id="revert">Discard changes</button><span class="msg" id="save-msg"></span></div>
   </section>
 
   <!-- ================= KEYS ================= -->

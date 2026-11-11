@@ -84,6 +84,26 @@ $("#stopall").onclick = async () => {
   await api("/api/stop-all", {}); refresh();
 };
 
+/* ---------------- instant switches (rule on/off, markets) */
+async function quickSave(body, label) {
+  const r = await api("/api/settings", body);
+  const m = $("#save-msg");
+  if (r.ok) { m.className = "msg ok"; m.textContent = label + " - saved"; }
+  else { m.className = "msg err"; m.textContent = (r.errors || [r.error]).join(" · "); }
+  await refresh();
+  return r.ok;
+}
+async function setRule(g, on) {
+  const ok = await quickSave({ rules: { [g]: { enabled: on } } }, `${g === "crypto" ? "Crypto" : "Commodity"} rule ${on ? "on" : "off"}`);
+  const card = $(`#rules [data-g="${g}"] input[data-k="enabled"]`);
+  if (card && S) card.checked = !!S.settings.rules[g].enabled;
+  return ok;
+}
+for (const g of ["crypto", "commodity"]) {
+  const q = $("#q-" + g);
+  q.onchange = async () => { q.dataset.busy = "1"; await setRule(g, q.checked); delete q.dataset.busy; };
+}
+
 /* ---------------- render */
 function render() {
   const s = S;
@@ -107,7 +127,8 @@ function render() {
   $$("#mode-seg button").forEach((b) => { b.classList.toggle("on", b.dataset.m === s.mode); b.classList.toggle("live", b.dataset.m === "live"); });
   const rules = s.settings.rules;
   const on = Object.entries(rules).filter(([, r]) => r.enabled).map(([g, r]) => `${g} ${mmss(r.start_s)}–${mmss(r.end_s)} at ${r.lo_c}–${r.hi_c}¢ ×${r.contracts}`);
-  $("#ctl-why").textContent = on.length ? on.join("  ·  ") : "both rules are off";
+  $("#ctl-why").textContent = on.length ? on.join("  ·  ") : "both rules are off - nothing will be bid";
+  for (const g of ["crypto", "commodity"]) { const q = $("#q-" + g); if (!q.dataset.busy) q.checked = !!rules[g].enabled; }
 
   // kpis
   const t = s.today, a = s.all;
@@ -197,15 +218,28 @@ function fillForm(st) {
       </div></div>`;
   }).join("");
   $$("#rules input[data-k$='_s']").forEach((i) => (i.oninput = () => { const h = i.parentElement.querySelector("[data-hint]"); if (h) h.textContent = mmss(+i.value || 0) + " into the 15:00 window"; }));
+  $$("#rules .card-h input[data-k='enabled']").forEach((i) => (i.onchange = () => setRule(i.closest("[data-g]").dataset.g, i.checked)));
   $("#mkts").innerHTML = Object.entries(st.markets).map(([c, on]) => `<label class="chip ${on ? "on" : ""}"><input type="checkbox" data-c="${c}" ${on ? "checked" : ""}>${c}</label>`).join("");
-  $$("#mkts input").forEach((i) => (i.onchange = () => i.parentElement.classList.toggle("on", i.checked)));
+  $$("#mkts input").forEach((i) => (i.onchange = async () => {
+    i.parentElement.classList.toggle("on", i.checked);
+    await quickSave({ markets: { [i.dataset.c]: i.checked } }, `${i.dataset.c} ${i.checked ? "on" : "off"}`);
+  }));
   $("#limits").innerHTML = LIMIT_FIELDS.map(([k, l]) => `<div class="f"><label>${l}</label><input class="in num" data-l="${k}" value="${st.limits[k]}" inputmode="decimal"></div>`).join("");
   $("#ns-on").checked = !!st.news_skip.enabled;
   $("#ns-times").value = (st.news_skip.times_et || []).join(", ");
   $$("#env-seg button").forEach((b) => b.classList.toggle("on", b.dataset.e === st.env));
   formLoaded = true;
+  dirty(false);
 }
-$$("#env-seg button").forEach((b) => (b.onclick = () => $$("#env-seg button").forEach((x) => x.classList.toggle("on", x === b))));
+function dirty(on) {
+  const m = $("#save-msg");
+  if (on) { m.className = "msg dirty"; m.textContent = "Unsaved changes"; }
+  else if (m.classList.contains("dirty")) { m.textContent = ""; m.className = "msg"; }
+}
+$("#v-settings").addEventListener("input", (e) => {
+  if (e.target.matches(".in") || e.target.matches("#ns-on")) dirty(true);
+});
+$$("#env-seg button").forEach((b) => (b.onclick = () => { $$("#env-seg button").forEach((x) => x.classList.toggle("on", x === b)); dirty(true); }));
 $("#revert").onclick = () => { formLoaded = false; if (S) fillForm(S.settings); $("#save-msg").textContent = ""; };
 $("#save").onclick = async () => {
   const rules = {};

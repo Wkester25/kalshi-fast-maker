@@ -70,7 +70,8 @@ main { max-width: 1280px; margin: 0 auto; padding: 20px; }
 /* ---------- control strip */
 .control { display: flex; align-items: center; gap: 18px; padding: 16px; flex-wrap: wrap; margin-bottom: 16px; }
 .control .big { font-size: 15px; font-weight: 600; }
-.control .why { color: var(--muted); font-size: 13px; }
+.control .why { color: var(--muted); font-size: 13px; flex: 1 1 220px; min-width: 0; }
+.control .spacer { display: none; }
 .seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 3px; }
 .seg button { border: 0; background: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; color: var(--muted); font-weight: 600; }
 .seg button.on { background: var(--panel); color: var(--text); box-shadow: 0 0 0 1px var(--line-2); }
@@ -156,6 +157,9 @@ textarea.in { min-height: 150px; resize: vertical; }
 .chip input { display: none; }
 .chip.on { background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--text); }
 .savebar { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.savebar.sticky { position: sticky; bottom: 0; z-index: 4; padding: 12px 0; background: linear-gradient(transparent, var(--bg) 35%); }
+.msg.dirty { color: var(--warn); }
+.rule-sw { display: flex; gap: 16px; flex-wrap: wrap; font-weight: 550; }
 .msg { font-size: 13px; }
 .msg.ok { color: var(--good); } .msg.err { color: var(--bad); }
 
