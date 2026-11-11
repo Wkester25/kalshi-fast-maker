@@ -80,6 +80,11 @@ class FakeKalshi:
 
     async def place(self, r):
         body = await r.json()
+        if getattr(self, "cross_first", False) and body["ticker"] not in getattr(self, "_crossed", set()):
+            self._crossed = getattr(self, "_crossed", set()) | {body["ticker"]}
+            self.orders_rejected_cross = getattr(self, "orders_rejected_cross", 0) + 1
+            return web.json_response({"error": {"code": "invalid_order", "message": "invalid order",
+                                                "details": "post only order would cross the book"}}, status=400)
         if self.whole_cent_only and abs(float(body["price"]) * 100 - round(float(body["price"]) * 100)) > 1e-6:
             self.rejected = getattr(self, "rejected", 0) + 1
             return web.json_response({"error": {"code": "invalid_price", "message": "invalid price"}}, status=400)

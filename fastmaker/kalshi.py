@@ -125,7 +125,11 @@ class Rest:
                         try:
                             d = json.loads(raw or b"{}")
                             err = d.get("error") or d
-                            msg = (err.get("message") or err.get("code")) if isinstance(err, dict) else str(err)
+                            if isinstance(err, dict):   # keep Kalshi's code and details: they say *why*
+                                parts = [str(err.get(k)) for k in ("code", "message", "details") if err.get(k)]
+                                msg = " | ".join(dict.fromkeys(parts)) or str(err)[:200]
+                            else:
+                                msg = str(err)[:200]
                         except ValueError:
                             msg = raw[:160].decode(errors="replace")
                         raise KalshiError(f"HTTP {r.status}: {msg}", r.status)
@@ -218,15 +222,10 @@ class Rest:
             r = await self.request("POST", "/portfolio/events/orders", body=body, timeout=4)
         except KalshiError as e:
             msg = str(e).lower()
-            if self.post_only and e.status == 400 and "post" in msg and any(w in msg for w in ("cross", "taker", "match", "would")):
-                return {"order_id": "", "fill_count": 0, "rejected": "would have crossed the spread"}
-            if self.post_only and e.status == 400 and "post" in msg:
-                self.post_only = False
-                body.pop("post_only", None)
-                body["client_order_id"] = client_id + "-b"
-                r = await self.request("POST", "/portfolio/events/orders", body=body, timeout=4)
-            else:
-                raise
+            # the market moved onto our price before the order arrived: post-only refuses to trade as taker
+            if e.status == 400 and any(w in msg for w in ("cross", "post_only", "post only", "would match", "taker")):
+                return {"order_id": "", "fill_count": 0, "rejected": f"would have crossed the spread ({e})"}
+            raise                                   # never resend without post-only
         r = r.get("order", r) if isinstance(r, dict) else {}
         fc = r.get("fill_count_fp") or r.get("fill_count") or 0
         return {"order_id": r.get("order_id", ""), "fill_count": int(float(fc))}

@@ -364,9 +364,10 @@ class Engine:
                 st.note = "order rejected: " + str(e)
                 self.event("error", s.coin, f"bid {a.side.upper()} {a.price:g}c rejected: {msg}")
                 return
-            if r.get("rejected"):
+            if r.get("rejected"):                                     # normal in a fast market: retry next update
                 st.order = None
                 st.note = r["rejected"]
+                self.event("info", s.coin, f"bid {a.side.upper()} {a.price:g}c not placed: {r['rejected']}")
                 return
             s.place_errors = 0
             st.order.order_id = r.get("order_id", "")

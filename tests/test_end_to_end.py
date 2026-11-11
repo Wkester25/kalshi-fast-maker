@@ -217,3 +217,30 @@ def test_rejected_price_falls_back_to_whole_cents(home):
             await eng.stop()
             await runner.cleanup()
     asyncio.run(go())
+
+
+def test_post_only_cross_is_retried_and_post_only_kept(home):
+    async def go():
+        port = free_port()
+        point_at(port)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
+        fake.cross_first = True
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="live", trading=True)
+        eng = Engine(cfg)
+        await eng.start()
+        try:
+            gold = eng.slots["GOLD"]
+            assert await wait_for(lambda: any(o["ticker"] == gold.ticker for o in fake.orders), 5)
+            assert fake.orders_rejected_cross >= 1
+            assert all(o.get("post_only") is True for o in fake.orders)   # never resent as a taker order
+            assert gold.place_errors == 0
+            ev = eng.store.recent_events(200)
+            assert any("would have crossed" in e["msg"] and "post only order would cross" in e["msg"] for e in ev)
+            assert not any(e["level"] == "error" and e["coin"] == "GOLD" for e in ev)
+        finally:
+            await eng.stop()
+            await runner.cleanup()
+    asyncio.run(go())
