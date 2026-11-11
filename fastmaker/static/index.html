@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fast Maker</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <div class="brand"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M18.5 5 9 18h6.5L13.5 27 23 14h-6.5z" fill="var(--accent-ink)"/></svg>Fast Maker</div>
+    <nav class="tabs" id="tabs">
+      <button data-v="dash" class="on">Dashboard</button>
+      <button data-v="settings">Settings</button>
+      <button data-v="keys">API key</button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="pills">
+      <span class="pill" id="p-feed"><span class="dot"></span><span>Feed</span></span>
+      <span class="pill opt" id="p-lat" title="REST round trip / WebSocket clock offset">—</span>
+      <span class="pill" id="p-mode">Paper</span>
+    </div>
+    <div class="icons">
+      <button class="icon-btn" id="theme" title="Light / dark" aria-label="Switch light or dark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      <button class="icon-btn" id="logout" title="Sign out" aria-label="Sign out"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="banner bad" id="b-halt"></div>
+  <div class="banner warn" id="b-key">No API key yet — the live feed needs one, even for paper trading. <button class="btn sm" data-go="keys">Add API key</button></div>
+
+  <!-- ================= DASHBOARD ================= -->
+  <section class="view on" id="v-dash">
+    <div class="card control">
+      <label class="sw lg"><input type="checkbox" id="trading"><span class="track"></span><span class="big" id="trading-l">Trading off</span></label>
+      <div class="seg" id="mode-seg"><button data-m="paper">Paper</button><button data-m="live">Live</button></div>
+      <span class="why" id="ctl-why"></span>
+      <div class="spacer"></div>
+      <button class="btn danger" id="stopall">Stop all &amp; cancel orders</button>
+    </div>
+
+    <div class="kpis">
+      <div class="card kpi"><div class="l">Today P&amp;L</div><div class="v" id="k-pnl">—</div><div class="s" id="k-pnl-s"></div></div>
+      <div class="card kpi"><div class="l">Per contract</div><div class="v" id="k-pc">—</div><div class="s">today, after fees</div></div>
+      <div class="card kpi"><div class="l">Trades today</div><div class="v" id="k-n">—</div><div class="s" id="k-n-s"></div></div>
+      <div class="card kpi"><div class="l">At risk now</div><div class="v" id="k-risk">—</div><div class="s" id="k-risk-s"></div></div>
+      <div class="card kpi"><div class="l">All time</div><div class="v" id="k-all">—</div><div class="s" id="k-all-s"></div></div>
+      <div class="card kpi"><div class="l">Feed</div><div class="v" id="k-msgs">—</div><div class="s" id="k-up"></div></div>
+    </div>
+
+    <div class="grid cols-main">
+      <div class="grid" style="align-content:start">
+        <div class="card">
+          <div class="card-h"><h2>Markets</h2><span class="sub" id="mk-sub"></span></div>
+          <div class="scroll"><table>
+            <thead><tr><th>Market</th><th>Time left</th><th class="n">YES bid / ask</th><th>Favourite</th><th>Us</th><th>Status</th><th class="n">Today</th></tr></thead>
+            <tbody id="mk"></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>Recent results</h2><span class="sub" id="res-sub"></span></div>
+          <div class="scroll"><table>
+            <thead><tr><th>Time</th><th>Market</th><th>Side</th><th class="n">Qty</th><th class="n">Avg</th><th>Outcome</th><th class="n">P&amp;L</th></tr></thead>
+            <tbody id="res"></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>By day</h2><span class="sub">current mode</span></div>
+          <div class="scroll"><table>
+            <thead><tr><th>Day (ET)</th><th class="n">Trades</th><th class="n">Contracts</th><th class="n">P&amp;L</th><th class="n">Per contract</th></tr></thead>
+            <tbody id="daily"></tbody>
+          </table></div>
+        </div>
+      </div>
+      <div class="card" style="align-self:start">
+        <div class="card-h"><h2>Activity</h2></div>
+        <div class="events" id="ev"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SETTINGS ================= -->
+  <section class="view" id="v-settings">
+    <div class="grid cols-2" id="rules"></div>
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card">
+        <div class="card-h"><h2>Markets</h2><span class="sub">which windows to trade</span></div>
+        <div class="card-b"><div class="chips" id="mkts"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Limits</h2><span class="sub">applied to the current mode</span></div>
+        <div class="card-b fields" id="limits"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>News skip</h2><span class="sub">sit out windows around scheduled releases</span></div>
+        <div class="card-b">
+          <label class="sw"><input type="checkbox" id="ns-on"><span class="track"></span><span>Skip windows that contain these times (ET, weekdays)</span></label>
+          <div class="f" style="margin-top:12px"><input class="in mono" id="ns-times" placeholder="08:30, 10:00"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Exchange</h2></div>
+        <div class="card-b">
+          <div class="seg" id="env-seg"><button data-e="real">Kalshi (real)</button><button data-e="demo">Demo</button></div>
+          <div class="hint" style="color:var(--faint);font-size:12px;margin-top:8px">Changing this needs a program restart. Demo uses a demo-account API key.</div>
+        </div>
+      </div>
+    </div>
+    <div class="savebar"><button class="btn primary" id="save">Save settings</button><button class="btn" id="revert">Discard changes</button><span class="msg" id="save-msg"></span></div>
+  </section>
+
+  <!-- ================= KEYS ================= -->
+  <section class="view" id="v-keys">
+    <div class="grid cols-2">
+      <div class="card">
+        <div class="card-h"><h2>Kalshi API key</h2><span class="sub" id="key-state"></span></div>
+        <div class="card-b">
+          <ol class="steps">
+            <li>On kalshi.com open <b>Account &amp; security → API keys</b> and choose <b>Create new API key</b>.</li>
+            <li>Copy the <b>Key ID</b> and download the <b>private key</b> file (it is shown once).</li>
+            <li>Paste both below, or drop the .key / .pem / .txt file on the box. It is stored only on this server (owner-read-only) and is never sent back to the browser.</li>
+          </ol>
+          <div class="sep"></div>
+          <div class="f"><label for="kid">Key ID</label><input class="in mono" id="kid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" spellcheck="false"></div>
+          <div class="f" style="margin-top:12px"><label for="pem">Private key</label>
+            <textarea class="in mono" id="pem" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;…&#10;-----END RSA PRIVATE KEY-----" spellcheck="false" autocomplete="off"></textarea></div>
+          <div class="drop" id="drop" style="margin-top:10px">Drop the key file here, or <u>choose a file</u><input type="file" id="file" hidden></div>
+          <div class="savebar"><button class="btn primary" id="key-save">Save &amp; test</button><button class="btn" id="key-test">Test current key</button><span class="msg" id="key-msg"></span></div>
+        </div>
+      </div>
+      <div class="grid" style="align-content:start">
+        <div class="card">
+          <div class="card-h"><h2>Connection</h2></div>
+          <div class="card-b grid" style="gap:10px" id="conn"></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>Web password</h2></div>
+          <div class="card-b">
+            <div class="fields">
+              <div class="f"><label for="pw-old">Current</label><input class="in" type="password" id="pw-old" autocomplete="current-password"></div>
+              <div class="f"><label for="pw-new">New (8+ characters)</label><input class="in" type="password" id="pw-new" autocomplete="new-password"></div>
+            </div>
+            <div class="savebar"><button class="btn" id="pw-save">Change password</button><span class="msg" id="pw-msg"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="modal" id="modal">
+  <div class="card">
+    <div class="card-h"><h2 id="m-title">Confirm</h2></div>
+    <div class="card-b">
+      <p id="m-text"></p>
+      <input class="in" type="password" id="m-pw" placeholder="Web password" autocomplete="current-password">
+      <div class="savebar"><button class="btn danger" id="m-ok">Confirm</button><button class="btn" id="m-cancel">Cancel</button><span class="msg err" id="m-msg"></span></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

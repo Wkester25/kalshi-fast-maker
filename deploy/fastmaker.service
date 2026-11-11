@@ -1,0 +1,25 @@
+[Unit]
+Description=Kalshi Fast Maker
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=fastmaker
+WorkingDirectory=/opt/fastmaker
+ExecStart=/opt/fastmaker/.venv/bin/python -u /opt/fastmaker/run.py
+Restart=on-failure
+RestartSec=5
+# stop cleanly: run.py cancels resting orders on SIGTERM
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Nice=-5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/fastmaker
+
+[Install]
+WantedBy=multi-user.target

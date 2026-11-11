@@ -1,0 +1,10 @@
+# runtime state - never commit
+config.json
+config.tmp
+secrets/
+data/
+*.pem
+*.key
+.venv/
+__pycache__/
+.pytest_cache/
