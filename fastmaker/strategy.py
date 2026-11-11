@@ -98,11 +98,31 @@ def bid_price(bid: float, ask: float, hi: float, step: float = TICK) -> float:
     return p
 
 
-def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | None, want_qty: int,
+def mmss(s: float) -> str:
+    return f"{int(s) // 60}:{int(s) % 60:02d}"
+
+
+def active_window(rule: dict, secs: float) -> dict | None:
+    for w in rule.get("windows") or []:
+        if w["start_s"] <= secs <= w["end_s"]:
+            return w
+    return None
+
+
+def next_window(rule: dict, secs: float) -> dict | None:
+    later = [w for w in rule.get("windows") or [] if w["start_s"] > secs]
+    return min(later, key=lambda w: w["start_s"]) if later else None
+
+
+def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | None, want_qty: int | None = None,
            ranges=None) -> list[Action]:
     """view: book.View for st.side (or for fav when no side yet), with our own order removed.
+    want_qty: None = the active window's contracts; the engine passes what we hold when we may not buy.
     ranges: the market's price grid (parse_ranges); None = 0.1c everywhere (tests)."""
     acts: list[Action] = []
+    win = active_window(rule, secs)
+    if want_qty is None:
+        want_qty = int(win["contracts"]) if win else 0
     side = st.side or fav
     if side is None or view is None:
         st.note = "no book yet"
@@ -129,12 +149,13 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
         if st.held >= want_qty:
             return acts
 
-    # ---- time window
-    if not (rule["start_s"] <= secs <= rule["end_s"]):
+    # ---- trading windows
+    if win is None:
         if st.order:
-            acts.append(Action("cancel", reason="outside bidding time"))
+            acts.append(Action("cancel", reason="outside the trading windows"))
         if st.held == 0:
-            st.note = "waiting for bidding time" if secs < rule["start_s"] else "done for this window"
+            nxt = next_window(rule, secs)
+            st.note = f"next window at {mmss(nxt['start_s'])}" if nxt else "done for this market"
         return acts
     if st.exiting or st.sold:
         return acts
@@ -162,14 +183,14 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
 
     # ---- band
     b, a = view.bid, view.ask
-    if b is None or a is None or not (rule["lo_c"] <= b < rule["hi_c"]) or a > 99.95:
+    if b is None or a is None or not (win["lo_c"] <= b < win["hi_c"]) or a > 99.95:
         if st.order:
-            acts.append(Action("cancel", reason=f"left the {rule['lo_c']:g}-{rule['hi_c']:g}c band"))
+            acts.append(Action("cancel", reason=f"left the {win['lo_c']:g}-{win['hi_c']:g}c band"))
         st.note = f"favourite {side.upper()} {b if b is not None else '-'}/{a if a is not None else '-'}, waiting for band"
         return acts
 
     step = step_at(ranges, side, b) if ranges else TICK
-    price = bid_price(b, a, rule["hi_c"], step)
+    price = bid_price(b, a, win["hi_c"], step)
     qty = want_qty - st.held
     if st.order:
         if b > st.order.price + 1e-9 and price > st.order.price + 1e-9:     # someone else outbid us

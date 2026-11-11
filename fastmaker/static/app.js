@@ -131,7 +131,7 @@ function render() {
   $("#trading-l").textContent = s.trading ? (s.mode === "live" ? "Trading LIVE" : "Paper trading") : "Trading off";
   $$("#mode-seg button").forEach((b) => { b.classList.toggle("on", b.dataset.m === s.mode); b.classList.toggle("live", b.dataset.m === "live"); });
   const rules = s.settings.rules;
-  const on = Object.entries(rules).filter(([, r]) => r.enabled).map(([g, r]) => `${g} ${mmss(r.start_s)}–${mmss(r.end_s)} at ${r.lo_c}–${r.hi_c}¢ ×${r.contracts}`);
+  const on = Object.entries(rules).filter(([, r]) => r.enabled).map(([g, r]) => `${g} ${winSummary(r)}`);
   $("#ctl-why").textContent = on.length ? on.join("  ·  ") : "both rules are off - nothing will be bid";
   for (const g of ["crypto", "commodity"]) { const q = $("#q-" + g); if (!q.dataset.busy) q.checked = !!rules[g].enabled; }
 
@@ -199,13 +199,31 @@ function render() {
 }
 
 /* ---------------- settings form */
-const RULE_FIELDS = [
-  ["start_s", "Bid from (s into window)", "s"], ["end_s", "Bid until (s into window)", "s"],
-  ["lo_c", "Lowest favourite bid (¢)", ""], ["hi_c", "Highest favourite bid (¢)", ""],
-  ["contracts", "Contracts per market", ""], ["stop_c", "Market stop: sell if bid under (¢)", ""],
-  ["stop_ms", "…for this long (ms)", ""], ["pull_drop_c", "Fast pull: mid drop (¢)", ""],
-  ["pull_ms", "…within (ms)", ""], ["pull_cooldown_ms", "Pause after a pull (ms)", ""],
+const SHARED_FIELDS = [
+  ["stop_c", "Market stop: sell if bid under (¢)"], ["stop_ms", "…for this long (ms)"],
+  ["pull_drop_c", "Fast pull: mid drop (¢)"], ["pull_ms", "…within (ms)"], ["pull_cooldown_ms", "Pause after a pull (ms)"],
 ];
+const WIN_COLS = [["start_s", "From"], ["end_s", "Until"], ["lo_c", "Bid ≥ ¢"], ["hi_c", "Bid < ¢"], ["contracts", "Qty"]];
+const toSecs = (v) => { const t = String(v).trim(); if (t.includes(":")) { const [m, x] = t.split(":"); return (+m || 0) * 60 + (+x || 0); } return +t || 0; };
+const winSummary = (r) => r.windows.map((w) => `${mmss(w.start_s)}–${mmss(w.end_s)} ${w.lo_c}–${w.hi_c}¢ ×${w.contracts}`).join(", ");
+
+function winRow(w) {
+  return `<div class="win-row">${WIN_COLS.map(([k]) => `<input class="in num" data-w="${k}" value="${k.endsWith("_s") ? mmss(w[k]) : w[k]}" inputmode="${k.endsWith("_s") ? "text" : "decimal"}" aria-label="${k}">`).join("")}
+    <button class="icon-btn" data-del title="Remove window" aria-label="Remove window">×</button></div>`;
+}
+function readWins(card) {
+  return $$(".win-row", card).map((row) => Object.fromEntries(WIN_COLS.map(([k]) => {
+    const v = $(`[data-w="${k}"]`, row).value; return [k, k.endsWith("_s") ? toSecs(v) : v];
+  })));
+}
+function drawTimeline(card) {
+  const wins = readWins(card);
+  $(".timeline", card).innerHTML = wins.map((w) => {
+    const a = Math.max(0, Math.min(900, w.start_s)), b = Math.max(a, Math.min(900, w.end_s));
+    return `<i style="left:${(a / 900) * 100}%;width:${Math.max(((b - a) / 900) * 100, 0.6)}%" title="${mmss(a)}–${mmss(b)}"></i>`;
+  }).join("") + [0, 300, 600, 900].map((t) => `<b style="left:${(t / 900) * 100}%">${mmss(t)}</b>`).join("");
+  const del = $$("[data-del]", card); del.forEach((d) => (d.disabled = del.length === 1));
+}
 const LIMIT_FIELDS = [["daily_loss_usd", "Daily loss limit ($)"], ["max_order_usd", "Max per order ($)"],
   ["max_open_crypto", "Max crypto markets at once"], ["max_open_commodity", "Max commodity markets at once"],
   ["stop_after_losses", "Stop for the day after N losses"]];
@@ -216,14 +234,35 @@ function fillForm(st) {
     return `<div class="card" data-g="${g}">
       <div class="card-h"><h2>${g === "crypto" ? "Crypto rule" : "Commodity rule"}</h2><span class="sub">early favourite maker</span><div class="spacer"></div>
         <label class="sw"><input type="checkbox" data-k="enabled" ${r.enabled ? "checked" : ""}><span class="track"></span></label></div>
-      <div class="card-b"><div class="fields">
-        ${RULE_FIELDS.map(([k, l, u]) => `<div class="f"><label>${l}</label><input class="in num" data-k="${k}" value="${r[k]}" inputmode="decimal">${u === "s" ? `<div class="hint" data-hint="${k}">${mmss(r[k])} into the 15:00 window</div>` : ""}</div>`).join("")}
-      </div>
-      <div class="sep"></div>
-      <label class="sw"><input type="checkbox" data-k="pull" ${r.pull ? "checked" : ""}><span class="track"></span><span>Fast pull (cancel the bid when the market drops sharply)</span></label>
+      <div class="card-b">
+        <div class="f"><label>Trading windows <span class="hint-inline">time into the 15:00 market (m:ss) · favourite's bid band · contracts</span></label></div>
+        <div class="timeline"></div>
+        <div class="win-head">${WIN_COLS.map(([, l]) => `<span>${l}</span>`).join("")}<span></span></div>
+        <div class="wins">${r.windows.map(winRow).join("")}</div>
+        <button class="btn sm" data-add style="margin-top:10px">+ Add window</button>
+        <div class="sep"></div>
+        <div class="fields">
+          ${SHARED_FIELDS.map(([k, l]) => `<div class="f"><label>${l}</label><input class="in num" data-k="${k}" value="${r[k]}" inputmode="decimal"></div>`).join("")}
+        </div>
+        <div class="sep"></div>
+        <label class="sw"><input type="checkbox" data-k="pull" ${r.pull ? "checked" : ""}><span class="track"></span><span>Fast pull (cancel the bid when the market drops sharply)</span></label>
+        <div class="hint" style="margin-top:8px">The stop and fast pull apply to every window of this rule.</div>
       </div></div>`;
   }).join("");
-  $$("#rules input[data-k$='_s']").forEach((i) => (i.oninput = () => { const h = i.parentElement.querySelector("[data-hint]"); if (h) h.textContent = mmss(+i.value || 0) + " into the 15:00 window"; }));
+  $$("#rules [data-g]").forEach((card) => {
+    drawTimeline(card);
+    card.addEventListener("input", (e) => { if (e.target.matches("[data-w]")) drawTimeline(card); });
+    card.addEventListener("click", (e) => {
+      if (e.target.closest("[data-del]")) { e.target.closest(".win-row").remove(); drawTimeline(card); dirty(true); }
+      if (e.target.closest("[data-add]")) {
+        const wins = readWins(card), last = wins[wins.length - 1];
+        const start = last ? Math.min(last.end_s + 30, 840) : 540;
+        const tpl = last || { lo_c: 97, hi_c: 99.5, contracts: 1 };
+        $(".wins", card).insertAdjacentHTML("beforeend", winRow({ start_s: start, end_s: Math.min(start + 60, 899), lo_c: tpl.lo_c, hi_c: tpl.hi_c, contracts: tpl.contracts }));
+        drawTimeline(card); dirty(true);
+      }
+    });
+  });
   $$("#rules .card-h input[data-k='enabled']").forEach((i) => (i.onchange = () => setRule(i.closest("[data-g]").dataset.g, i.checked)));
   $("#mkts").innerHTML = Object.entries(st.markets).map(([c, on]) => `<label class="chip ${on ? "on" : ""}"><input type="checkbox" data-c="${c}" ${on ? "checked" : ""}>${c}</label>`).join("");
   $$("#mkts input").forEach((i) => (i.onchange = async () => {
@@ -252,6 +291,7 @@ $("#save").onclick = async () => {
   $$("#rules [data-g]").forEach((card) => {
     const r = {};
     $$("input[data-k]", card).forEach((i) => (r[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value));
+    r.windows = readWins(card);
     rules[card.dataset.g] = r;
   });
   const markets = {}; $$("#mkts input").forEach((i) => (markets[i.dataset.c] = i.checked));
@@ -259,9 +299,9 @@ $("#save").onclick = async () => {
   const env = $("#env-seg button.on")?.dataset.e;
   const r = await api("/api/settings", { rules, markets, limits, env, news_skip: { enabled: $("#ns-on").checked, times_et: $("#ns-times").value } });
   const m = $("#save-msg");
-  if (r.ok) { m.className = "msg ok"; m.textContent = "Saved — in effect now."; }
-  else { m.className = "msg err"; m.textContent = (r.errors || [r.error]).join(" · "); }
-  await refresh(); formLoaded = false; fillForm(S.settings);
+  await refresh();
+  if (r.ok) { formLoaded = false; fillForm(S.settings); m.className = "msg ok"; m.textContent = "Saved — in effect now."; }
+  else { m.className = "msg err"; m.textContent = (r.errors || [r.error]).join(" · "); }   // keep what was typed
 };
 
 /* ---------------- keys */

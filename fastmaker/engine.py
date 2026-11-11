@@ -245,7 +245,7 @@ class Engine:
         own = st.order
         view = s.book.view(side, own.price if own else None, (own.qty - own.filled) if own else 0)
         can_trade, why = self.can_trade(s)
-        want = int(rule["contracts"]) if can_trade else max(st.held, 0)
+        want = None if can_trade else max(st.held, 0)            # None: the active window's contracts
         acts = decide(rule, st, secs, now_ms, view, fav, want, s.ranges)
         if not can_trade:
             if why and st.held == 0:

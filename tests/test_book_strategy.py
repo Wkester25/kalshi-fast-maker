@@ -38,8 +38,11 @@ def test_bid_price():
 
 
 def rule(**k):
+    """DEFAULT_RULE with overrides; window keys (start_s, lo_c, ...) go to its single window."""
+    from fastmaker.config import WINDOW_KEYS
     r = dict(DEFAULT_RULE)
-    r.update(k)
+    r["windows"] = [dict(r["windows"][0], **{x: v for x, v in k.items() if x in WINDOW_KEYS})]
+    r.update({x: v for x, v in k.items() if x not in WINDOW_KEYS})
     return r
 
 
@@ -104,3 +107,33 @@ def test_price_grid():
     assert bid_price(96.3, 98.0, 99.5, 1.0) == 97.0          # off-grid book level still yields a grid price
     acts = decide(rule(), State("T"), 600, 0, make_book().view("yes"), "yes", 1, whole)
     assert acts[0].price == 97.0
+
+
+def test_multiple_windows():
+    from fastmaker.config import window
+    from fastmaker.strategy import Order
+    r = rule(windows=[window(120, 240, 98.0, 99.5, 1), window(540, 720, 96.0, 99.5, 3)])
+    b = make_book()                                   # YES 97/98
+    st = State("T")
+    assert decide(r, st, 60, 0, b.view("yes"), "yes") == [] and st.note == "next window at 2:00"
+    assert decide(r, st, 180, 0, b.view("yes"), "yes") == []            # 97 is below window 1's 98c band
+    acts = decide(r, st, 600, 0, b.view("yes"), "yes")                  # window 2: 96-99.5, 3 contracts
+    assert acts[0].kind == "place" and acts[0].qty == 3
+    st.order = Order("yes", 97.1, 3, 0)
+    acts = decide(r, st, 300, 0, b.view("yes", 97.1, 3), "yes")         # between windows: cancel
+    assert [a.kind for a in acts] == ["cancel"]
+    st.order = None
+    decide(r, st, 800, 0, b.view("yes"), "yes")
+    assert st.note == "done for this market"
+
+
+def test_old_config_becomes_one_window(tmp_path, monkeypatch):
+    import json
+    from fastmaker import config
+    monkeypatch.setattr(config, "CONFIG", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text(json.dumps({"rules": {"crypto": {
+        "enabled": True, "start_s": 600, "end_s": 700, "lo_c": 98.0, "hi_c": 99.0, "contracts": 2, "stop_c": 40}}}))
+    c = config.load()
+    assert c["rules"]["crypto"]["windows"] == [{"start_s": 600, "end_s": 700, "lo_c": 98.0, "hi_c": 99.0, "contracts": 2}]
+    assert "lo_c" not in c["rules"]["crypto"] and c["rules"]["crypto"]["stop_c"] == 40
+    assert c["rules"]["commodity"]["windows"][0]["end_s"] == 780                 # untouched default

@@ -119,11 +119,20 @@ def test_web_flow(home):
             assert st["mode"] == "paper" and st["has_key"] is False and len(st["markets"]) == 15
 
             # settings: validation and save
-            r = await (await client.post("/api/settings", json={"rules": {"crypto": {"lo_c": 99.6, "hi_c": 99.5}}})).json()
+            bad = {"start_s": "9:00", "end_s": "12:00", "lo_c": 99.6, "hi_c": 99.5, "contracts": 1}
+            r = await (await client.post("/api/settings", json={"rules": {"crypto": {"windows": [bad]}}})).json()
             assert not r["ok"]
-            r = await (await client.post("/api/settings", json={"rules": {"crypto": {"contracts": 3}},
+            overlap = [{"start_s": "9:00", "end_s": "12:00", "lo_c": 97, "hi_c": 99.5, "contracts": 1},
+                       {"start_s": "11:00", "end_s": "13:00", "lo_c": 97, "hi_c": 99.5, "contracts": 1}]
+            r = await (await client.post("/api/settings", json={"rules": {"crypto": {"windows": overlap}}})).json()
+            assert not r["ok"] and "overlap" in r["errors"][0]
+            two = [{"start_s": "14:30", "end_s": "14:55", "lo_c": 98, "hi_c": 99.5, "contracts": 2},
+                   {"start_s": "9:00", "end_s": "12:00", "lo_c": 97, "hi_c": 99.5, "contracts": 3}]
+            r = await (await client.post("/api/settings", json={"rules": {"crypto": {"windows": two}},
                                                                 "limits": {"daily_loss_usd": 15}})).json()
-            assert r["ok"] and config.load()["rules"]["crypto"]["contracts"] == 3
+            assert r["ok"], r
+            w = config.load()["rules"]["crypto"]["windows"]
+            assert [(x["start_s"], x["end_s"], x["contracts"]) for x in w] == [(540, 720, 3), (870, 895, 2)]
 
             # live needs a key and the password
             assert (await client.post("/api/mode", json={"mode": "live", "password": "correct horse"})).status == 400

@@ -41,15 +41,32 @@ ENDPOINTS = {   # first entry is used; the rest are fallbacks (Kalshi docs, Nov 
 }
 WS_SIGN_PATH = "/trade-api/ws/v2"
 
-# One rule per group. Times are seconds into the 15-minute window; prices in cents.
+# One rule per group. Each rule has one or more trading windows (seconds into the 15-minute market;
+# prices in cents); the stop and fast pull are shared because they protect whatever we hold.
+WINDOW_KEYS = ("start_s", "end_s", "lo_c", "hi_c", "contracts")
+MAX_WINDOWS = 8
+
+
+def window(start_s=540, end_s=720, lo_c=97.0, hi_c=99.5, contracts=1) -> dict:
+    return {"start_s": start_s, "end_s": end_s, "lo_c": lo_c, "hi_c": hi_c, "contracts": contracts}
+
+
 DEFAULT_RULE = {
     "enabled": True,
-    "start_s": 540, "end_s": 720,        # bid only inside this part of the window
-    "lo_c": 97.0, "hi_c": 99.5,          # the favourite's best bid must be in [lo, hi)
-    "contracts": 1,
+    "windows": [window()],               # bid when the favourite's best bid is in [lo, hi) between start and end
     "stop_c": 50.0, "stop_ms": 1000,     # sell if our side's bid stays below stop_c this long
     "pull": True, "pull_drop_c": 1.5, "pull_ms": 1500, "pull_cooldown_ms": 5000,
 }
+
+
+def normalize_rule(r: dict) -> dict:
+    """Old configs had one window as flat keys; turn them into the windows list."""
+    r = dict(r)
+    legacy = {k: r.pop(k) for k in WINDOW_KEYS if k in r}
+    if not r.get("windows"):
+        r["windows"] = [window(**legacy)] if legacy else [window()]
+    r["windows"] = sorted((dict(window(), **w) for w in r["windows"]), key=lambda w: w["start_s"])
+    return r
 DEFAULTS = {
     "env": "real",
     "mode": "paper",                     # paper | live
@@ -57,7 +74,7 @@ DEFAULTS = {
     "markets": {k: k not in ("SOL", "COPPER") for k in MARKETS},
     "rules": {
         "crypto": dict(DEFAULT_RULE, enabled=False),   # newer data didn't support crypto; paper-test before live
-        "commodity": dict(DEFAULT_RULE, end_s=780, lo_c=96.0),
+        "commodity": dict(DEFAULT_RULE, windows=[window(540, 780, 96.0, 99.5, 1)]),
     },
     "limits": {"daily_loss_usd": 20.0, "max_open_crypto": 6, "max_open_commodity": 7,
                "max_order_usd": 25.0, "stop_after_losses": 6},
@@ -82,7 +99,14 @@ def load() -> dict:
         raw = json.loads(CONFIG.read_text())
     except (OSError, ValueError):
         raw = {}
+    saved_rules = (raw.get("rules") or {}) if isinstance(raw, dict) else {}
     cfg = _merge(DEFAULTS, raw)
+    for g in cfg["rules"]:                      # lists aren't merged: the saved windows (or legacy keys) win
+        r = dict(cfg["rules"][g])
+        saved = saved_rules.get(g)
+        if isinstance(saved, dict) and "windows" not in saved:
+            r.pop("windows", None)              # an old config: build the window from its flat keys
+        cfg["rules"][g] = normalize_rule(r)
     if not cfg["web"]["session_secret"]:
         cfg["web"]["session_secret"] = _secrets.token_hex(32)
         save(cfg)

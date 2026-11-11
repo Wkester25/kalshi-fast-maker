@@ -37,6 +37,54 @@ def _token_ok(cfg: dict, tok: str | None) -> bool:
     return hmac.compare_digest(sig, _sign(cfg["web"]["session_secret"], exp + cfg["web"]["password_hash"]))
 
 
+def _rule_from(cur: dict, r: dict) -> tuple[dict, str]:
+    """Merge a posted rule into the current one and check it. Returns (rule, error)."""
+    new = dict(cur)
+    try:
+        for k in ("stop_ms", "pull_ms", "pull_cooldown_ms"):
+            if k in r:
+                new[k] = int(float(r[k]))
+        for k in ("stop_c", "pull_drop_c"):
+            if k in r:
+                new[k] = float(r[k])
+        for k in ("enabled", "pull"):
+            if k in r:
+                new[k] = bool(r[k])
+        if "windows" in r:
+            wins = []
+            for w in r["windows"]:
+                wins.append({"start_s": _secs(w["start_s"]), "end_s": _secs(w["end_s"]), "lo_c": float(w["lo_c"]),
+                             "hi_c": float(w["hi_c"]), "contracts": int(float(w["contracts"]))})
+            new["windows"] = sorted(wins, key=lambda w: w["start_s"])
+    except (TypeError, ValueError, KeyError):
+        return cur, "numbers only (times as m:ss or seconds)"
+    wins = new["windows"]
+    if not 1 <= len(wins) <= config.MAX_WINDOWS:
+        return cur, f"use 1 to {config.MAX_WINDOWS} windows"
+    for n, w in enumerate(wins, 1):
+        if not (0 <= w["start_s"] < w["end_s"] <= 899):
+            return cur, f"window {n}: start must be before end, between 0:00 and 14:59"
+        if not (50 <= w["lo_c"] < w["hi_c"] <= 99.9):
+            return cur, f"window {n}: price band 50-99.9c, lowest below highest"
+        if not 1 <= w["contracts"] <= 1000:
+            return cur, f"window {n}: contracts 1-1000"
+    for a, b in zip(wins, wins[1:]):
+        if b["start_s"] <= a["end_s"]:
+            return cur, "windows overlap - each one must start after the previous one ends"
+    if not 1 <= new["stop_c"] < min(w["lo_c"] for w in wins):
+        return cur, "the stop must be below every window's price band"
+    return new, ""
+
+
+def _secs(v) -> int:
+    """'9:00' or '540' -> 540."""
+    t = str(v).strip()
+    if ":" in t:
+        m, sec = t.split(":", 1)
+        return int(m) * 60 + int(float(sec))
+    return int(float(t))
+
+
 def _locked(ip: str) -> bool:
     now = time.time()
     _fails[ip] = [t for t in _fails.get(ip, []) if now - t < 300]
@@ -163,28 +211,9 @@ def build(engine) -> web.Application:
                     for k in r:
                         cfg["rules"][g][k] = bool(r[k])
                     continue
-                try:
-                    new = dict(cfg["rules"][g])
-                    for k in ("start_s", "end_s", "stop_ms", "pull_ms", "pull_cooldown_ms", "contracts"):
-                        if k in r:
-                            new[k] = int(float(r[k]))
-                    for k in ("lo_c", "hi_c", "stop_c", "pull_drop_c"):
-                        if k in r:
-                            new[k] = float(r[k])
-                    for k in ("enabled", "pull"):
-                        if k in r:
-                            new[k] = bool(r[k])
-                except (TypeError, ValueError):
-                    errs.append(f"{g}: numbers only")
-                    continue
-                if not (0 <= new["start_s"] < new["end_s"] <= 899):
-                    errs.append(f"{g}: start must be before end, within 0-899 s")
-                elif not (50 <= new["lo_c"] < new["hi_c"] <= 99.9):
-                    errs.append(f"{g}: price band must be 50-99.9c, lowest below highest")
-                elif not (1 <= new["contracts"] <= 1000):
-                    errs.append(f"{g}: contracts 1-1000")
-                elif not (1 <= new["stop_c"] < new["lo_c"]):
-                    errs.append(f"{g}: stop must be below the band")
+                new, err = _rule_from(cfg["rules"][g], r)
+                if err:
+                    errs.append(f"{g}: {err}")
                 else:
                     cfg["rules"][g] = new
         if "limits" in body:
