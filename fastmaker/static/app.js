@@ -188,7 +188,7 @@ function render() {
       <td>${left == null ? "—" : `<span class="bar" title="${mmss(el)} into the window"><i style="width:${(el / 900) * 100}%"></i></span><span class="num">${mmss(left)}</span>`}</td>
       <td class="n">${px(m.yes_bid)} / ${px(m.yes_ask)}</td>
       <td>${fav}</td><td>${us}</td>
-      <td class="note">${esc(m.enabled ? (m.note || "") : "switched off")}</td>
+      <td class="note">${esc(m.closed_min != null ? `no open market on Kalshi (closed ${m.closed_min} min) - waiting` : m.enabled ? (m.note || (m.ticker ? "" : "looking for the market…")) : "switched off")}</td>
       <td class="n ${cls(m.pnl_today_c)}">${m.pnl_today_c ? usd(m.pnl_today_c) : ""}</td></tr>`;
   }).join("");
 

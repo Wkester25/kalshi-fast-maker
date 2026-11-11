@@ -370,3 +370,29 @@ def test_remove_result_row(home):
             await client.close()
             await eng.stop()
     asyncio.run(go())
+
+
+def test_closed_market_is_shown_and_reopens(home):
+    async def go():
+        port = free_port()
+        point_at(port)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
+        gold = fake.markets.pop("KXGOLD15M")                     # gold has no open market (daily break)
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="paper", trading=True)
+        eng = Engine(cfg)
+        await eng.start()
+        try:
+            assert await wait_for(lambda: eng.slots["GOLD"].closed_since > 0, 4)
+            row = next(r for r in eng.status()["markets"] if r["coin"] == "GOLD")
+            assert row["closed_min"] == 0 and not row["ticker"]
+            fake.markets["KXGOLD15M"] = gold                     # it reopens
+            eng.slots["GOLD"].next_lookup = 0
+            assert await wait_for(lambda: eng.slots["GOLD"].ticker == gold["ticker"], 4)
+            assert eng.slots["GOLD"].closed_since == 0
+        finally:
+            await eng.stop()
+            await runner.cleanup()
+    asyncio.run(go())

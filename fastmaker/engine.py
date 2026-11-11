@@ -82,6 +82,8 @@ class Slot:
     ranges: list = field(default_factory=lambda: list(WHOLE_CENT))   # the market's valid price grid
     place_errors: int = 0             # rejected placements in a row (this window)
     trades: list = field(default_factory=list)
+    next_lookup: float = 0.0          # when to ask Kalshi again for this series' open market
+    closed_since: float = 0.0         # no open market on Kalshi since this time (0 = has one)
 
 
 @dataclass
@@ -180,13 +182,25 @@ class Engine:
                     self.by_ticker.pop(s.ticker, None)
                     await self.feed.drop_markets([s.ticker])
                     s.ticker, s.st, s.book = "", None, None
+                if now < s.next_lookup:
+                    continue
                 try:
                     m = await self.rest.open_market(s.series)
                 except KalshiError as e:
                     log.debug("market lookup %s: %s", s.coin, e)
+                    s.next_lookup = now + 3
                     continue
                 if not m:
+                    # nothing open (e.g. the metals' daily 5-6 PM ET break): look every second around the
+                    # quarter-hour when new windows open, otherwise every 15 s
+                    if not s.closed_since:
+                        s.closed_since = now
+                        self.event("info", s.coin, "no open market on Kalshi - waiting for the next one")
+                    s.next_lookup = now + (1 if now % 900 < 30 else 15)
                     continue
+                if s.closed_since:
+                    self.event("info", s.coin, f"market open again after {(now - s.closed_since) / 60:.0f} min")
+                s.closed_since, s.next_lookup = 0.0, 0.0
                 s.ticker, s.open_ts, s.close_ts = m["ticker"], iso_ts(m["open_time"]), iso_ts(m["close_time"])
                 try:
                     s.strike = float(m.get("floor_strike")) if m.get("floor_strike") not in (None, "") else None
@@ -681,6 +695,7 @@ class Engine:
         coin_pnl = self.store.by_coin(mode, et_day())
         for c, s in self.slots.items():
             row = {"coin": c, "group": s.group, "enabled": self.cfg["markets"].get(c, False), "ticker": s.ticker,
+                   "closed_min": round((now - s.closed_since) / 60) if s.closed_since and not s.ticker else None,
                    "left_s": max(s.close_ts - now, 0) if s.ticker else None, "pnl_today_c": coin_pnl.get(c, 0.0)}
             if s.book and s.book.ready:
                 v = s.book.view("yes")
