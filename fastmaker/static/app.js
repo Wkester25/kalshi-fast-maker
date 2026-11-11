@@ -200,12 +200,13 @@ function render() {
 
 /* ---------------- settings form */
 const SHARED_FIELDS = [
-  ["stop_c", "Market stop: sell if bid under (¢)"], ["stop_ms", "…for this long (ms)"],
+  ["stop_c", "Market stop: sell if bid under (¢) · 0 = hold"], ["stop_ms", "…for this long (ms)"],
   ["pull_drop_c", "Fast pull: mid drop (¢)"], ["pull_ms", "…within (ms)"], ["pull_cooldown_ms", "Pause after a pull (ms)"],
 ];
 const WIN_COLS = [["start_s", "From"], ["end_s", "Until"], ["lo_c", "Bid ≥ ¢"], ["hi_c", "Bid < ¢"], ["contracts", "Qty"]];
 const toSecs = (v) => { const t = String(v).trim(); if (t.includes(":")) { const [m, x] = t.split(":"); return (+m || 0) * 60 + (+x || 0); } return +t || 0; };
-const winSummary = (r) => r.windows.map((w) => `${mmss(w.start_s)}–${mmss(w.end_s)} ${w.lo_c}–${w.hi_c}¢ ×${w.contracts}`).join(", ");
+const winSummary = (r) => r.windows.map((w) => `${mmss(w.start_s)}–${mmss(w.end_s)} ${w.lo_c}–${w.hi_c}¢ ×${w.contracts}`).join(", ")
+  + (+r.stop_c ? `, stop ${r.stop_c}¢` : ", no stop");
 
 function winRow(w) {
   return `<div class="win-row">${WIN_COLS.map(([k]) => `<input class="in num" data-w="${k}" value="${k.endsWith("_s") ? mmss(w[k]) : w[k]}" inputmode="${k.endsWith("_s") ? "text" : "decimal"}" aria-label="${k}">`).join("")}

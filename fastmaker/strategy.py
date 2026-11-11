@@ -134,7 +134,10 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
             acts.append(Action("sell", side, max(math.floor((view.bid or 1) - 5), 1), st.held, "stop: still selling"))
             return acts
         b = view.bid
-        if b is not None and b < rule["stop_c"]:
+        if rule["stop_c"] <= 0:                        # stop 0 = hold to settlement, never sell
+            st.low_since_ms = None
+            st.note = f"holding {st.held} {side.upper()} to settlement (no stop)"
+        elif b is not None and b < rule["stop_c"]:
             if st.low_since_ms is None:
                 st.low_since_ms = now_ms
             if now_ms - st.low_since_ms >= rule["stop_ms"]:

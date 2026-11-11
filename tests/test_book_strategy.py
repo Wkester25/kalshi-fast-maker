@@ -137,3 +137,13 @@ def test_old_config_becomes_one_window(tmp_path, monkeypatch):
     assert c["rules"]["crypto"]["windows"] == [{"start_s": 600, "end_s": 700, "lo_c": 98.0, "hi_c": 99.0, "contracts": 2}]
     assert "lo_c" not in c["rules"]["crypto"] and c["rules"]["crypto"]["stop_c"] == 40
     assert c["rules"]["commodity"]["windows"][0]["end_s"] == 780                 # untouched default
+
+
+def test_stop_zero_holds():
+    b = Book("T")
+    b.snapshot({"yes_dollars_fp": [["0.0500", "10"]], "no_dollars_fp": [["0.9000", "10"]]}, 0)   # crashed to 5c
+    st = State("T", side="yes", held=1, cost_c=97)
+    r = rule(stop_c=0, stop_ms=0)
+    for t in (0, 5000, 60000):
+        assert decide(r, st, 700, t, b.view("yes"), "yes", 1) == []
+    assert not st.exiting and "no stop" in st.note

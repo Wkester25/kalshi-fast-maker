@@ -23,7 +23,7 @@ The crypto rule is off because the independent review of our backtests found the
 
 The old bot polled once a second. Here, every decision runs on each WebSocket book update, typically a few milliseconds after Kalshi sends it:
 
-- **Market stop.** If our side's bid stays below `stop_c` for `stop_ms` (default 50¢ for 1,000 ms), it sells everything right away. The old bot noticed this up to a second late.
+- **Market stop.** If our side's bid stays below `stop_c` for `stop_ms` (default 50¢ for 1,000 ms), it sells everything right away. The old bot noticed this up to a second late. Set the stop to **0** to never sell and always hold to settlement.
 - **Fast pull.** If our side's mid drops by `pull_drop_c` within `pull_ms` (default 1.5¢ within 1.5 s), it cancels the resting bid before the move fills us, then pauses for `pull_cooldown_ms`. This targets the adverse selection we found: fills that arrive just as the price turns are the losing ones.
 - **Cancel on feed loss.** If the WebSocket drops, resting bids are cancelled and the stale books are ignored until fresh snapshots arrive.
 - The self-bidding bug can't happen here: our own resting order is subtracted from the book before any decision.

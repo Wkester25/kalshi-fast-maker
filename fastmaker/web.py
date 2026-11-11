@@ -71,8 +71,8 @@ def _rule_from(cur: dict, r: dict) -> tuple[dict, str]:
     for a, b in zip(wins, wins[1:]):
         if b["start_s"] <= a["end_s"]:
             return cur, "windows overlap - each one must start after the previous one ends"
-    if not 1 <= new["stop_c"] < min(w["lo_c"] for w in wins):
-        return cur, "the stop must be below every window's price band"
+    if new["stop_c"] != 0 and not 1 <= new["stop_c"] < min(w["lo_c"] for w in wins):
+        return cur, "the stop must be 0 (hold) or between 1c and every window's price band"
     return new, ""
 
 

@@ -133,6 +133,10 @@ def test_web_flow(home):
             assert r["ok"], r
             w = config.load()["rules"]["crypto"]["windows"]
             assert [(x["start_s"], x["end_s"], x["contracts"]) for x in w] == [(540, 720, 3), (870, 895, 2)]
+            r = await (await client.post("/api/settings", json={"rules": {"crypto": {"stop_c": 0}}})).json()
+            assert r["ok"] and config.load()["rules"]["crypto"]["stop_c"] == 0
+            r = await (await client.post("/api/settings", json={"rules": {"crypto": {"stop_c": 0.5}}})).json()
+            assert not r["ok"]
 
             # live needs a key and the password
             assert (await client.post("/api/mode", json={"mode": "live", "password": "correct horse"})).status == 400
