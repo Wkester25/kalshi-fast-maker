@@ -244,7 +244,7 @@ class Rest:
         if afp not in (None, ""):
             avg = float(afp) * 100 if side == "yes" else 100 - float(afp) * 100
         fee = r.get("average_fee_paid")
-        return {"fill_count": got, "avg_price_c": avg,
+        return {"order_id": r.get("order_id", ""), "fill_count": got, "avg_price_c": avg,
                 "fees_c": got * float(fee) * 100 if fee not in (None, "") else 0.0}
 
     async def cancel(self, order_id: str, ticker: str) -> dict:
@@ -252,8 +252,28 @@ class Rest:
         return await self.request("DELETE", f"/portfolio/events/orders/{order_id}", {"market_ticker": ticker},
                                   timeout=4)
 
-    async def cancel_all(self) -> dict:
-        return await self.request("DELETE", "/portfolio/events/orders", timeout=6)
+    async def cancel_mine(self, prefix: str = "fm") -> tuple[int, list[str]]:
+        """Cancel only this program's resting orders (client ids start with `prefix`); other bots on the
+        same account are left alone. Returns (cancelled, errors)."""
+        done, errs, cursor = 0, [], None
+        for _ in range(10):
+            params = {"status": "resting", "limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+            r = await self.request("GET", "/portfolio/orders", params, timeout=6)
+            for o in r.get("orders") or []:
+                if not str(o.get("client_order_id") or "").startswith(prefix):
+                    continue
+                try:
+                    await self.cancel(o["order_id"], o.get("ticker", ""))
+                    done += 1
+                except KalshiError as e:
+                    if e.status != 404:
+                        errs.append(f"{o.get('ticker')}: {e}")
+            cursor = r.get("cursor")
+            if not cursor:
+                break
+        return done, errs
 
 
 # ------------------------------------------------------------------ WebSocket

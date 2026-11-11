@@ -71,6 +71,7 @@ class Engine:
         self.pending: list[Pending] = []
         self.index: dict[str, dict] = {}
         self.seen_fills: set[str] = set()
+        self._foreign_seen: set[str] = set()
         self.order_kind: dict[str, str] = {}      # order_id -> "buy"/"sell" (fallback when no client id)
         self.halted = ""
         self.started = time.time()
@@ -80,6 +81,8 @@ class Engine:
     # ------------------------------------------------------------ lifecycle
     async def start(self):
         self.store.event("info", "", f"started ({self.cfg['mode']} mode, {self.cfg['env']} exchange)")
+        if self.rest.has_key:
+            asyncio.create_task(self._clear_leftovers())
         self._tasks = [asyncio.create_task(self.feed.run()), asyncio.create_task(self._roll_loop()),
                        asyncio.create_task(self._timer_loop()), asyncio.create_task(self._settle_loop())]
 
@@ -92,6 +95,16 @@ class Engine:
             t.cancel()
         self.rec.close()
         await self.rest.close()
+
+    async def _clear_leftovers(self):
+        """Orders from a previous run (crash, kill) are no longer tracked: take them off the exchange."""
+        try:
+            n, errs = await self.rest.cancel_mine()
+            if n or errs:
+                self.event("warn" if errs else "info", "", f"cancelled {n} leftover order(s) from a previous run"
+                           + (f"; failed: {errs}" if errs else ""))
+        except Exception as e:                                         # noqa: BLE001
+            self.event("warn", "", f"could not check for leftover orders: {e}")
 
     def event(self, level: str, coin: str, msg: str):
         log.info("%s %s %s", level, coin, msg)
@@ -412,6 +425,8 @@ class Engine:
         st.last_sell_ms = time.time() * 1000
         if s.mode == "live":
             r = await self.rest.sell_ioc(s.ticker, a.side, st.held, a.price, "fms-" + uuid.uuid4().hex[:20])
+            if r.get("order_id"):
+                self.order_kind[r["order_id"]] = "sell"
             # fills (and their prices) arrive on the feed; the response is logged only
             self.event("stop", s.coin, f"live stop sell {r.get('fill_count')}/{st.held} {a.side.upper()} "
                                         f"(floor {a.price:g}c) - {a.reason}")
@@ -430,10 +445,12 @@ class Engine:
         self.halted = why
         self.cfg["trading"] = False
         config.save(self.cfg)
-        try:
-            await self.rest.cancel_all()
+        try:                                                          # only our orders: other bots may share the account
+            n, errs = await self.rest.cancel_mine()
+            if errs:
+                self.event("error", "", f"some cancels failed - check Kalshi: {errs}")
         except Exception as e:                                         # noqa: BLE001
-            self.event("error", "", f"cancel-all failed: {e}")
+            self.event("error", "", f"cancelling our orders failed - check Kalshi: {e}")
         for s in self.slots.values():
             if s.st:
                 s.st.order = None
@@ -472,11 +489,21 @@ class Engine:
         s = self.by_ticker.get(m.get("market_ticker", "")) or next(
             (p.slot for p in self.pending if p.slot.ticker == m.get("market_ticker")), None)
         if not s or not s.st:
-            self.event("warn", "", f"fill for an untracked market {m.get('market_ticker')}")
+            if str(m.get("client_order_id") or "").startswith(("fmb-", "fms-")):
+                self.event("warn", "", f"fill for an untracked market {m.get('market_ticker')}")
             return
         cid = m.get("client_order_id") or ""
-        kind = "sell" if cid.startswith("fms-") else "buy" if cid.startswith("fmb-") else self.order_kind.get(
-            m.get("order_id", ""), "sell" if m.get("action", "").startswith("sell") else "buy")
+        oid = m.get("order_id", "")
+        # the fill feed reports every fill on the account: only ours count (another bot may trade it too)
+        if cid.startswith("fms-") or (not cid and self.order_kind.get(oid) == "sell"):
+            kind = "sell"
+        elif cid.startswith("fmb-") or (not cid and self.order_kind.get(oid) == "buy"):
+            kind = "buy"
+        else:
+            if tid not in self._foreign_seen:
+                self._foreign_seen.add(tid)
+                log.info("ignoring a fill that isn't ours: %s %s", m.get("market_ticker"), cid or oid)
+            return
         n = int(float(m.get("count_fp") or 0))
         # we only ever hold one side per window; trust that over the message's own fields
         side = s.st.side or next((x for x in (m.get("purchased_side"), m.get("side")) if x in ("yes", "no")), None)

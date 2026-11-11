@@ -24,6 +24,7 @@ class FakeKalshi:
         self.open_ts = time.time() - secs_into_window
         self.close_ts = self.open_ts + 900
         self.orders: list[dict] = []
+        self.foreign_orders: list[dict] = []             # another bot's orders on the same account
         self.cancels: list[str] = []
         self.ws_auth: list[dict] = []
         self.books: dict[str, dict] = {}
@@ -50,11 +51,25 @@ class FakeKalshi:
         a.router.add_get("/trade-api/v2/markets/{t}", self.get_market)
         a.router.add_get("/trade-api/v2/portfolio/balance", self.balance)
         a.router.add_get("/trade-api/v2/portfolio/fills", self.empty_fills)
+        a.router.add_get("/trade-api/v2/portfolio/orders", self.resting_orders)
         a.router.add_post("/trade-api/v2/portfolio/events/orders", self.place)
         a.router.add_delete("/trade-api/v2/portfolio/events/orders/{oid}", self.cancel)
         a.router.add_delete("/trade-api/v2/portfolio/events/orders", self.cancel_all)
         a.router.add_get("/trade-api/ws/v2", self.ws)
         return a
+
+    async def resting_orders(self, r):
+        live = [dict(o, client_order_id=o.get("client_order_id", "")) for o in self.orders + self.foreign_orders
+                if o["order_id"] not in self.cancels]
+        return web.json_response({"orders": live, "cursor": ""})
+
+    async def fill(self, ticker, order_id, cid, side, yes_price, count):
+        msg = {"type": "fill", "sid": 9, "msg": {
+            "trade_id": f"t{order_id}-{time.time()}", "order_id": order_id, "client_order_id": cid,
+            "market_ticker": ticker, "side": side, "action": "buy", "yes_price_dollars": f"{yes_price / 100:.4f}",
+            "count_fp": f"{count:.2f}", "fee_cost": "0.0000"}, "sending_ts_ms": int(time.time() * 1000)}
+        for ws in list(self.clients):
+            await ws.send_json(msg)
 
     async def empty_fills(self, r):
         return web.json_response({"fills": []})

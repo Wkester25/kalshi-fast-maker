@@ -269,3 +269,32 @@ def test_switch_saves_even_if_other_fields_are_bad(home):
             await client.close()
             await eng.stop()
     asyncio.run(go())
+
+
+def test_other_bots_fills_and_orders_are_left_alone(home):
+    async def go():
+        port = free_port()
+        point_at(port)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
+        fake.foreign_orders.append({"order_id": "ml-1", "client_order_id": "ml-abc", "ticker": "X"})
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="live", trading=True)
+        eng = Engine(cfg)
+        await eng.start()
+        try:
+            gold = eng.slots["GOLD"]
+            assert await wait_for(lambda: gold.st and gold.st.order and gold.st.order.order_id, 5)
+            o = gold.st.order
+            await fake.fill(gold.ticker, "ml-9", "ml-xyz", "no", 3.0, 5)          # Maker Lab's fill, same market
+            await asyncio.sleep(0.3)
+            assert gold.st.held == 0
+            await fake.fill(gold.ticker, o.order_id, o.client_id, "no", round(100 - o.price, 1), 1)   # ours
+            assert await wait_for(lambda: gold.st.held == 1, 3)
+            await eng.halt("test")                                                 # Stop all
+            assert "ml-1" not in fake.cancels
+        finally:
+            await eng.stop()
+            await runner.cleanup()
+    asyncio.run(go())
