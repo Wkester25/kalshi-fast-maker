@@ -9,7 +9,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from . import config
+from . import __version__, config
 from .kalshi import Signer
 
 STATIC = Path(__file__).parent / "static"
@@ -47,6 +47,14 @@ def build(engine) -> web.Application:
     cfg = engine.cfg
 
     @web.middleware
+    async def no_stale(request: web.Request, handler):
+        """Browsers (phones especially) must never run an old copy of the page after an update."""
+        resp = await handler(request)
+        if not request.path.startswith("/favicon"):
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return resp
+
+    @web.middleware
     async def auth(request: web.Request, handler):
         open_paths = ("/login", "/setup", "/static/", "/favicon.svg")
         if request.path.startswith(open_paths):
@@ -69,7 +77,10 @@ def build(engine) -> web.Application:
 
     # ---- pages
     async def index(_):
-        return web.FileResponse(STATIC / "index.html")
+        html = (STATIC / "index.html").read_text()
+        for f in ("app.js", "style.css"):             # versioned URLs: an update always loads the new files
+            html = html.replace(f"/static/{f}", f"/static/{f}?v={__version__}")
+        return web.Response(text=html, content_type="text/html")
 
     async def login_page(_):
         if not cfg["web"]["password_hash"]:
@@ -114,6 +125,7 @@ def build(engine) -> web.Application:
     async def state(_):
         st = engine.status()
         st["settings"] = {k: cfg[k] for k in ("markets", "rules", "limits", "news_skip", "env", "record")}
+        st["version"] = __version__
         return web.json_response(st)
 
     async def trading(request):
@@ -146,6 +158,10 @@ def build(engine) -> web.Application:
             for g in ("crypto", "commodity"):
                 r = body["rules"].get(g)
                 if not r:
+                    continue
+                if set(r) <= {"enabled", "pull"}:          # plain switches: nothing to validate
+                    for k in r:
+                        cfg["rules"][g][k] = bool(r[k])
                     continue
                 try:
                     new = dict(cfg["rules"][g])
@@ -241,7 +257,7 @@ def build(engine) -> web.Application:
         _set_cookie(resp)
         return resp
 
-    app = web.Application(middlewares=[auth])
+    app = web.Application(middlewares=[no_stale, auth])
     app.router.add_get("/", index)
     app.router.add_get("/login", login_page)
     app.router.add_get("/setup", setup_page)

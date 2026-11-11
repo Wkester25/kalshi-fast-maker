@@ -244,3 +244,28 @@ def test_post_only_cross_is_retried_and_post_only_kept(home):
             await eng.stop()
             await runner.cleanup()
     asyncio.run(go())
+
+
+def test_switch_saves_even_if_other_fields_are_bad(home):
+    """Flipping a rule on must work on its own and the page must never be served stale."""
+    async def go():
+        cfg = config.load()
+        cfg["env"] = "fake"
+        point_at(free_port())
+        cfg["rules"]["crypto"]["stop_c"] = 99          # an invalid value already saved (stop above the band)
+        eng = Engine(cfg)
+        client = TestClient(TestServer(build(eng)))
+        await client.start_server()
+        try:
+            await client.post("/setup", json={"password": "correct horse"})
+            r = await (await client.post("/api/settings", json={"rules": {"crypto": {"enabled": True}}})).json()
+            assert r["ok"] and config.load()["rules"]["crypto"]["enabled"] is True
+            st = await (await client.get("/api/state")).json()
+            assert st["settings"]["rules"]["crypto"]["enabled"] is True and st["version"]
+            page = await client.get("/")
+            assert "no-store" in page.headers["Cache-Control"]
+            assert "/static/app.js?v=" in await page.text()
+        finally:
+            await client.close()
+            await eng.stop()
+    asyncio.run(go())

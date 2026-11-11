@@ -196,3 +196,10 @@ textarea.in { min-height: 150px; resize: vertical; }
   main { padding: 16px; }
   .pills .pill.opt { display: none; }
 }
+
+/* toast */
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; z-index: 30;
+  padding: 10px 16px; border-radius: 10px; font-weight: 600; font-size: 13.5px; max-width: calc(100vw - 32px);
+  background: var(--panel); border: 1px solid var(--line-2); box-shadow: 0 8px 24px rgba(0,0,0,.3); transition: opacity .15s, transform .15s; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.toast.ok { color: var(--good); } .toast.err { color: var(--bad); }

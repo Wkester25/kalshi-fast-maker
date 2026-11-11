@@ -85,11 +85,16 @@ $("#stopall").onclick = async () => {
 };
 
 /* ---------------- instant switches (rule on/off, markets) */
+let toastT = 0;
+function toast(text, ok) {
+  const t = $("#toast");
+  t.textContent = text; t.className = "toast on " + (ok ? "ok" : "err");
+  clearTimeout(toastT); toastT = setTimeout(() => (t.className = "toast"), ok ? 2500 : 7000);
+}
 async function quickSave(body, label) {
   const r = await api("/api/settings", body);
-  const m = $("#save-msg");
-  if (r.ok) { m.className = "msg ok"; m.textContent = label + " - saved"; }
-  else { m.className = "msg err"; m.textContent = (r.errors || [r.error]).join(" · "); }
+  if (r.ok) toast(label + " - saved", true);
+  else toast("Not saved: " + (r.errors || [r.error]).join(" · "), false);
   await refresh();
   return r.ok;
 }
@@ -187,7 +192,8 @@ function render() {
   $("#conn").innerHTML = `
     <div class="status-box"><span class="dot ${s.has_key ? "good" : "warn"}"></span><span>${s.has_key ? "API key loaded" : esc(s.key_error || "no API key")}</span></div>
     <div class="status-box"><span class="dot ${ok ? "good" : "bad"}"></span><span>WebSocket: ${esc(s.feed)} · ${s.msgs.toLocaleString()} messages</span></div>
-    <div class="status-box"><span class="dot ${s.rest_ms == null ? "" : s.rest_ms < 60 ? "good" : "warn"}"></span><span>REST round trip ${s.rest_ms == null ? "—" : Math.round(s.rest_ms) + " ms"} · clock offset ${s.skew_ms == null ? "—" : Math.round(s.skew_ms) + " ms"}</span></div>`;
+    <div class="status-box"><span class="dot ${s.rest_ms == null ? "" : s.rest_ms < 60 ? "good" : "warn"}"></span><span>REST round trip ${s.rest_ms == null ? "—" : Math.round(s.rest_ms) + " ms"} · clock offset ${s.skew_ms == null ? "—" : Math.round(s.skew_ms) + " ms"}</span></div>
+    <div class="status-box"><span class="dot"></span><span>Program version ${esc(s.version || "?")}</span></div>`;
 
   if (!formLoaded) fillForm(s.settings);
 }

@@ -337,6 +337,7 @@ class Engine:
         room = lim["daily_loss_usd"] * 100 + self.today()["pnl_c"] - self.open_risk_c()
         qty = min(qty, int(room // max(a.price, 1)))
         if qty < 1:
+            st.note = "no room under the daily loss limit / max per order"
             return
         s.mode = self.cfg["mode"]
         cid = "fmb-" + uuid.uuid4().hex[:20]
