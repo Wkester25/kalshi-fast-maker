@@ -556,6 +556,10 @@ def test_depth_and_order_timing_and_downloads(home):
             names = zipfile.ZipFile(io.BytesIO(await z.read())).namelist()
             assert any("depth-" in n for n in names) and any("orders-" in n for n in names)
             assert (await client.get("/api/data/day/..%2F..%2Fsecrets")).status == 404
+            hr = info["days"][0]["hours"][0]["hour"]
+            zh = await client.get(f"/api/data/day/{eng.rec.day}?hour={hr}")
+            assert zh.status == 200 and all(f"-{hr}." in n for n in zipfile.ZipFile(io.BytesIO(await zh.read())).namelist())
+            assert (await client.get(f"/api/data/day/{eng.rec.day}?hour=../x")).status == 404
             eng.store.result("live", "GOLD", gold.ticker, "no", 1, 96.3, 0, "won", 3.7)
             c = await client.get("/api/data/table/results")
             assert c.status == 200 and "pnl_c" in (await c.text()).splitlines()[0]

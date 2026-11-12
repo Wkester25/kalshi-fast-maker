@@ -238,3 +238,11 @@ tr:hover .row-del { opacity: 1; }
 .size-now span { color: var(--muted); font-weight: 400; }
 a.btn { text-decoration: none; color: inherit; }
 a.btn.primary { color: var(--accent-ink); }
+
+/* per-hour downloads */
+.hours-row td { padding-top: 0; }
+.hours { display: flex; flex-wrap: wrap; gap: 6px; }
+.hour { display: inline-flex; flex-direction: column; align-items: center; min-width: 52px; padding: 4px 8px; border-radius: 8px;
+  border: 1px solid var(--line-2); text-decoration: none; color: var(--text); font: 600 12px/1.2 ui-monospace, monospace; }
+.hour small { color: var(--faint); font-weight: 500; font-size: 10.5px; }
+.hour:hover { border-color: var(--accent); background: var(--accent-bg); }

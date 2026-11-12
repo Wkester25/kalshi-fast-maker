@@ -166,7 +166,9 @@ async function loadData() {
     <div class="status-box"><span class="dot ${r.dropped ? "warn" : "good"}"></span><span>${r.written.toLocaleString()} rows written since start${r.dropped ? ` · <b>${r.dropped.toLocaleString()} dropped</b> (writer fell behind or disk problem)` : " · none dropped"} · ${r.queued.toLocaleString()} waiting</span></div>
     <div class="status-box"><span class="dot ${d.disk_free_gb < 5 ? "warn" : "good"}"></span><span>${d.disk_free_gb} GB free on the server</span></div>`;
   $("#days").innerHTML = d.days.length ? d.days.map((x) => `<tr><td class="num">${x.day}</td><td class="n">${x.files}</td><td class="n">${fmtBytes(x.bytes)}</td>
-      <td class="n"><a class="btn sm" href="/api/data/day/${x.day}" download>Download .zip</a></td></tr>`).join("")
+      <td class="n"><a class="btn sm" href="/api/data/day/${x.day}" download>Whole day .zip</a></td></tr>
+      <tr class="hours-row"><td colspan="4"><div class="hours">${(x.hours || []).map((h) =>
+        `<a class="hour" href="/api/data/day/${x.day}?hour=${h.hour}" download title="${h.hour === "day" ? "files from before hourly recording" : `${h.hour}:00-${h.hour}:59 UTC`} · ${fmtBytes(h.bytes)}">${h.hour === "day" ? "earlier" : h.hour + "h"}<small>${fmtBytes(h.bytes)}</small></a>`).join("")}</div></td></tr>`).join("")
     : `<tr><td colspan="4" class="empty">Nothing recorded yet.</td></tr>`;
 }
 $$("[data-rec]").forEach((i) => (i.onchange = async () => {

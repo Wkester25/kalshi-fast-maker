@@ -317,7 +317,9 @@ def build(engine) -> web.Application:
         return web.json_response({"ok": True})
 
     # ---- data: recording switches live in /api/settings; listing and downloads here
-    export_lock = asyncio.Lock()                       # one export at a time: never compete with the bot for disk
+    # Downloads are streamed from worker threads straight to the browser: no temp files to rebuild, so a
+    # second click or a browser retry can't corrupt a download in progress, and the bot isn't slowed.
+    downloads = asyncio.Semaphore(2)
 
     async def data_info(_):
         loop = asyncio.get_running_loop()
@@ -326,32 +328,68 @@ def build(engine) -> web.Application:
                                   "disk_free_gb": round(store_mod.disk_free_gb(), 1),
                                   "switches": {k: bool(cfg.get(k, True)) for k in ("record", "record_depth", "record_orders")}})
 
-    def _exports_dir():
-        d = config.DATA / "exports"
-        d.mkdir(parents=True, exist_ok=True)
-        for f in d.iterdir():                              # keep only the newest few exports
-            if f.is_file() and time.time() - f.stat().st_mtime > 3600:
-                f.unlink(missing_ok=True)
-        return d
+    async def _pump(request, worker, filename: str, ctype: str):
+        """Stream what `worker(q, stop)` produces on a thread to the browser, chunk by chunk."""
+        import queue as _queue
+        import threading as _threading
+        loop = asyncio.get_running_loop()
+        q: _queue.Queue = _queue.Queue(maxsize=8)
+        stop = _threading.Event()
+        resp = web.StreamResponse(headers={"Content-Type": ctype, "Content-Disposition": f'attachment; filename="{filename}"',
+                                           "Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+        async with downloads:
+            fut = loop.run_in_executor(None, worker, q, stop)
+            try:
+                await resp.prepare(request)
+                while True:
+                    chunk = await loop.run_in_executor(None, q.get)
+                    if chunk is None:
+                        break
+                    if isinstance(chunk, Exception):
+                        engine.event("warn", "", f"download {filename} failed: {chunk}")
+                        break
+                    await resp.write(chunk)
+                await resp.write_eof()
+            finally:
+                stop.set()                                # browser gone or done: the worker stops promptly
+                try:
+                    while True:
+                        q.get_nowait()                    # unblock a worker waiting to put
+                except _queue.Empty:
+                    pass
+                await asyncio.shield(fut)
+        return resp
 
     async def data_day(request):
         day = request.match_info["day"]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or not (config.DATA / "rec" / day).is_dir():
+        hour = request.query.get("hour")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or not (config.DATA / "rec" / day).is_dir() or \
+                (hour is not None and not re.fullmatch(r"\d{2}|day", hour)):
             return web.json_response({"error": "no recordings for that day"}, status=404)
-        async with export_lock:
-            out = _exports_dir() / f"fastmaker-{day}.zip"
-            await asyncio.get_running_loop().run_in_executor(None, store_mod.zip_day, day, out)
-        return web.FileResponse(out, headers={"Content-Disposition": f'attachment; filename="{out.name}"'})
+        files = await asyncio.get_running_loop().run_in_executor(None, store_mod.day_files, day, hour)
+        if not files:
+            return web.json_response({"error": "no recordings for that hour"}, status=404)
+        name = f"fastmaker-{day}" + (f"-{hour}h" if hour and hour != "day" else "") + ".zip"
+        return await _pump(request, lambda q, stop: store_mod.zip_stream(files, day, q, stop), name, "application/zip")
 
     async def data_table(request):
         name = request.match_info["name"]
         if name not in store_mod.EXPORT_TABLES:
             return web.json_response({"error": "unknown table"}, status=404)
-        async with export_lock:
-            out = _exports_dir() / f"fastmaker-{name}-{time.strftime('%Y%m%d-%H%M')}.csv"
-            await asyncio.get_running_loop().run_in_executor(None, store_mod.export_table, engine.store.path, name, out)
-        return web.FileResponse(out, headers={"Content-Disposition": f'attachment; filename="{out.name}"',
-                                              "Content-Type": "text/csv"})
+        import uuid as _uuid
+        d = config.DATA / "exports"
+        d.mkdir(parents=True, exist_ok=True)
+        out = d / f"{name}-{_uuid.uuid4().hex}.csv"                # unique: never shared between downloads
+
+        def work(q, stop):
+            try:
+                store_mod.export_table(engine.store.path, name, out)
+                store_mod.file_stream(out, q, stop)
+            except Exception as e:                       # noqa: BLE001
+                q.put(e)
+            finally:
+                out.unlink(missing_ok=True)
+        return await _pump(request, work, f"fastmaker-{name}-{time.strftime('%Y%m%d-%H%M')}.csv", "text/csv")
 
     async def stop_all(_):
         await engine.halt("Stop all pressed")

@@ -71,7 +71,7 @@ Suggested path: run paper for at least a week (several hundred trades). Go live 
 
 ## Data for later analysis
 
-Everything is under `data/` and can be downloaded from the **Data** tab: a zip per day, plus results and the activity log as CSV. Each kind of recording can be switched on or off there.
+Everything is under `data/` and can be downloaded from the **Data** tab: a zip per day or per hour (smaller pieces for a slow link), plus results and the activity log as CSV. Downloads are streamed straight from the files, so nothing is rebuilt and a retried or doubled download can't be corrupted. Each kind of recording can be switched on or off there.
 
 `data/rec/<UTC day>/` holds one gzipped CSV per stream per UTC hour (`book-14.csv.gz` and so on), so every finished hour is a complete file:
 

@@ -271,22 +271,104 @@ def export_table(db_path: str, name: str, out: Path) -> Path:
     return out
 
 
+def _hour_of(name: str) -> str:
+    """'depth-13.csv.gz' -> '13'; files from before hourly rotation ('book.csv.gz') -> 'day'."""
+    stem = name.split(".")[0]
+    tail = stem.rsplit("-", 1)[-1]
+    return tail if "-" in stem and tail.isdigit() and len(tail) == 2 else "day"
+
+
 def list_days() -> list[dict]:
     root = DATA / "rec"
     out = []
     if root.exists():
         for d in sorted((p for p in root.iterdir() if p.is_dir()), reverse=True):
             files = [f for f in d.iterdir() if f.is_file()]
-            out.append({"day": d.name, "files": len(files), "bytes": sum(f.stat().st_size for f in files)})
+            hours: dict[str, int] = {}
+            for f in files:
+                h = _hour_of(f.name)
+                hours[h] = hours.get(h, 0) + f.stat().st_size
+            out.append({"day": d.name, "files": len(files), "bytes": sum(hours.values()),
+                        "hours": [{"hour": h, "bytes": b} for h, b in sorted(hours.items())]})
     return out
 
 
-def zip_day(day: str, out: Path) -> Path:
-    """The day's recordings in one zip. The files are already gzipped, so they're stored, not recompressed."""
-    import zipfile
+def day_files(day: str, hour: str | None = None) -> list[Path]:
     d = DATA / "rec" / day
-    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_STORED) as z:
-        for f in sorted(d.iterdir()):
-            if f.is_file():
-                z.write(f, arcname=f"{day}/{f.name}")
-    return out
+    return sorted(f for f in d.iterdir() if f.is_file() and (hour is None or _hour_of(f.name) == hour))
+
+
+class _ChunkPipe:
+    """File-like object for zipfile: hands written bytes to the web handler in ~1 MB chunks (bounded, so a
+    slow download just slows the zip thread down; nothing piles up in memory)."""
+
+    def __init__(self, q: "queue.Queue", stop: "threading.Event"):
+        self.q, self.stop, self.buf, self.n = q, stop, bytearray(), 0
+
+    def put(self, item) -> None:
+        while True:                                       # bounded queue; give up if the download was cancelled
+            try:
+                self.q.put(item, timeout=0.5)
+                return
+            except queue.Full:
+                if self.stop.is_set():
+                    raise ConnectionAbortedError("download cancelled")
+
+    def write(self, b) -> int:
+        if self.stop.is_set():
+            raise ConnectionAbortedError("download cancelled")
+        self.buf += b
+        self.n += len(b)
+        if len(self.buf) >= 1 << 20:
+            self.put(bytes(self.buf))
+            self.buf = bytearray()
+        return len(b)
+
+    def tell(self) -> int:
+        return self.n
+
+    def flush(self):
+        pass
+
+    def close(self):
+        if self.buf:
+            self.put(bytes(self.buf))
+            self.buf = bytearray()
+
+
+def zip_stream(files: list[Path], prefix: str, q: "queue.Queue", stop: "threading.Event") -> None:
+    """Runs on a worker thread: writes a zip of `files` (stored, not recompressed - they're gzip already)
+    into `q` chunk by chunk, then None. On error puts the exception; stops if `stop` is set."""
+    import zipfile
+    pipe = _ChunkPipe(q, stop)
+    try:
+        with zipfile.ZipFile(pipe, "w", compression=zipfile.ZIP_STORED) as z:
+            for f in files:
+                with open(f, "rb") as src, z.open(f"{prefix}/{f.name}", "w", force_zip64=True) as dst:
+                    while chunk := src.read(1 << 20):
+                        dst.write(chunk)
+        pipe.close()
+        pipe.put(None)
+    except ConnectionAbortedError:
+        return
+    except Exception as e:                                # noqa: BLE001
+        try:
+            pipe.put(e)
+        except ConnectionAbortedError:
+            pass
+
+
+def file_stream(path: Path, q: "queue.Queue", stop: "threading.Event") -> None:
+    pipe = _ChunkPipe(q, stop)
+    try:
+        with open(path, "rb") as f:
+            while chunk := f.read(1 << 20):
+                pipe.put(chunk)
+        pipe.put(None)
+    except ConnectionAbortedError:
+        return
+    except Exception as e:                                # noqa: BLE001
+        try:
+            pipe.put(e)
+        except ConnectionAbortedError:
+            pass
