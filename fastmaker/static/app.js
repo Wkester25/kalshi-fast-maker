@@ -254,17 +254,17 @@ function render() {
 
 /* ---------------- settings form */
 const SHARED_FIELDS = [
-  ["stop_c", "Market stop: sell if bid under (¢) · 0 = hold"], ["stop_ms", "…for this long (ms)"],
   ["pull_drop_c", "Fast pull: mid drop (¢)"], ["pull_ms", "…within (ms)"], ["pull_cooldown_ms", "Pause after a pull (ms)"],
 ];
-const WIN_COLS = [["start_s", "From"], ["end_s", "Until"], ["lo_c", "Bid ≥ ¢"], ["hi_c", "Bid < ¢"], ["contracts", "Qty"]];
+const WIN_COLS = [["start_s", "From"], ["end_s", "Until"], ["lo_c", "Bid ≥ ¢"], ["hi_c", "Bid < ¢"], ["contracts", "Qty"],
+  ["stop_c", "Stop ¢", "Market stop: sell if our bid stays under this (0 = hold to settlement)"],
+  ["stop_ms", "Stop ms", "…for this many milliseconds"]];
 const toSecs = (v) => { const t = String(v).trim(); if (t.includes(":")) { const [m, x] = t.split(":"); return (+m || 0) * 60 + (+x || 0); } return +t || 0; };
 const scaledQty = (n) => Math.max(1, Math.floor(n * ((S && S.sizing && S.sizing.factor) || 1) + 1e-9));
-const winSummary = (r) => r.windows.map((w) => `${mmss(w.start_s)}–${mmss(w.end_s)} ${w.lo_c}–${w.hi_c}¢ ×${scaledQty(w.contracts)}`).join(", ")
-  + (+r.stop_c ? `, stop ${r.stop_c}¢` : ", no stop");
+const winSummary = (r) => r.windows.map((w) => `${mmss(w.start_s)}–${mmss(w.end_s)} ${w.lo_c}–${w.hi_c}¢ ×${scaledQty(w.contracts)} ${+w.stop_c ? `stop ${w.stop_c}¢` : "hold"}`).join(", ");
 
 function winRow(w) {
-  return `<div class="win-row">${WIN_COLS.map(([k]) => `<input class="in num" data-w="${k}" value="${k.endsWith("_s") ? mmss(w[k]) : w[k]}" inputmode="${k.endsWith("_s") ? "text" : "decimal"}" aria-label="${k}">`).join("")}
+  return `<div class="win-row">${WIN_COLS.map(([k, l, tip]) => `<label class="wc"><span>${l}</span><input class="in num" data-w="${k}" value="${k.endsWith("_s") ? mmss(w[k]) : w[k]}" inputmode="${k.endsWith("_s") ? "text" : "decimal"}" aria-label="${l}"${tip ? ` title="${tip}"` : ""}></label>`).join("")}
     <button class="icon-btn" data-del title="Remove window" aria-label="Remove window">×</button></div>`;
 }
 function readWins(card) {
@@ -291,7 +291,7 @@ function fillForm(st) {
       <div class="card-h"><h2>${g === "crypto" ? "Crypto rule" : "Commodity rule"}</h2><span class="sub">early favourite maker</span><div class="spacer"></div>
         <label class="sw"><input type="checkbox" data-k="enabled" ${r.enabled ? "checked" : ""}><span class="track"></span></label></div>
       <div class="card-b">
-        <div class="f"><label>Trading windows <span class="hint-inline">time into the 15:00 market (m:ss) · favourite's bid band · contracts</span></label></div>
+        <div class="f"><label>Trading windows <span class="hint-inline">time into the 15:00 market (m:ss) · favourite's bid band · contracts · market stop (0 = hold)</span></label></div>
         <div class="timeline"></div>
         <div class="win-head">${WIN_COLS.map(([, l]) => `<span>${l}</span>`).join("")}<span></span></div>
         <div class="wins">${r.windows.map(winRow).join("")}</div>
@@ -302,7 +302,7 @@ function fillForm(st) {
         </div>
         <div class="sep"></div>
         <label class="sw"><input type="checkbox" data-k="pull" ${r.pull ? "checked" : ""}><span class="track"></span><span>Fast pull (cancel the bid when the market drops sharply)</span></label>
-        <div class="hint" style="margin-top:8px">The stop and fast pull apply to every window of this rule.</div>
+        <div class="hint" style="margin-top:8px">Fast pull applies to every window. Each window has its own stop; contracts keep the stop of the window that bought them.</div>
       </div></div>`;
   }).join("");
   $$("#rules [data-g]").forEach((card) => {
@@ -313,8 +313,9 @@ function fillForm(st) {
       if (e.target.closest("[data-add]")) {
         const wins = readWins(card), last = wins[wins.length - 1];
         const start = last ? Math.min(last.end_s + 30, 840) : 540;
-        const tpl = last || { lo_c: 97, hi_c: 99.5, contracts: 1 };
-        $(".wins", card).insertAdjacentHTML("beforeend", winRow({ start_s: start, end_s: Math.min(start + 60, 899), lo_c: tpl.lo_c, hi_c: tpl.hi_c, contracts: tpl.contracts }));
+        const tpl = last || { lo_c: 97, hi_c: 99.5, contracts: 1, stop_c: 50, stop_ms: 1000 };
+        $(".wins", card).insertAdjacentHTML("beforeend", winRow({ start_s: start, end_s: Math.min(start + 60, 899), lo_c: tpl.lo_c, hi_c: tpl.hi_c,
+          contracts: tpl.contracts, stop_c: tpl.stop_c, stop_ms: tpl.stop_ms }));
         drawTimeline(card); dirty(true);
       }
     });

@@ -41,12 +41,11 @@ def _rule_from(cur: dict, r: dict) -> tuple[dict, str]:
     """Merge a posted rule into the current one and check it. Returns (rule, error)."""
     new = dict(cur)
     try:
-        for k in ("stop_ms", "pull_ms", "pull_cooldown_ms"):
+        for k in ("pull_ms", "pull_cooldown_ms"):
             if k in r:
                 new[k] = int(float(r[k]))
-        for k in ("stop_c", "pull_drop_c"):
-            if k in r:
-                new[k] = float(r[k])
+        if "pull_drop_c" in r:
+            new["pull_drop_c"] = float(r["pull_drop_c"])
         for k in ("enabled", "pull"):
             if k in r:
                 new[k] = bool(r[k])
@@ -54,8 +53,13 @@ def _rule_from(cur: dict, r: dict) -> tuple[dict, str]:
             wins = []
             for w in r["windows"]:
                 wins.append({"start_s": _secs(w["start_s"]), "end_s": _secs(w["end_s"]), "lo_c": float(w["lo_c"]),
-                             "hi_c": float(w["hi_c"]), "contracts": int(float(w["contracts"]))})
+                             "hi_c": float(w["hi_c"]), "contracts": int(float(w["contracts"])),
+                             "stop_c": float(w.get("stop_c", 50)), "stop_ms": int(float(w.get("stop_ms", 1000)))})
             new["windows"] = sorted(wins, key=lambda w: w["start_s"])
+        if "stop_c" in r or "stop_ms" in r:             # a rule-wide stop: apply it to every window
+            new["windows"] = [dict(w, **({"stop_c": float(r["stop_c"])} if "stop_c" in r else {}),
+                                   **({"stop_ms": int(float(r["stop_ms"]))} if "stop_ms" in r else {}))
+                              for w in new["windows"]]
     except (TypeError, ValueError, KeyError):
         return cur, "numbers only (times as m:ss or seconds)"
     wins = new["windows"]
@@ -68,11 +72,13 @@ def _rule_from(cur: dict, r: dict) -> tuple[dict, str]:
             return cur, f"window {n}: price band 50-99.9c, lowest below highest"
         if not 1 <= w["contracts"] <= 1000:
             return cur, f"window {n}: contracts 1-1000"
+        if w["stop_c"] != 0 and not 1 <= w["stop_c"] < w["lo_c"]:
+            return cur, f"window {n}: stop must be 0 (hold) or between 1c and the bottom of its band"
+        if not 0 <= w["stop_ms"] <= 600_000:
+            return cur, f"window {n}: stop delay 0-600000 ms"
     for a, b in zip(wins, wins[1:]):
         if b["start_s"] <= a["end_s"]:
             return cur, "windows overlap - each one must start after the previous one ends"
-    if new["stop_c"] != 0 and not 1 <= new["stop_c"] < min(w["lo_c"] for w in wins):
-        return cur, "the stop must be 0 (hold) or between 1c and every window's price band"
     return new, ""
 
 

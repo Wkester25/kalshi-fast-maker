@@ -134,7 +134,7 @@ def test_web_flow(home):
             w = config.load()["rules"]["crypto"]["windows"]
             assert [(x["start_s"], x["end_s"], x["contracts"]) for x in w] == [(540, 720, 3), (870, 895, 2)]
             r = await (await client.post("/api/settings", json={"rules": {"crypto": {"stop_c": 0}}})).json()
-            assert r["ok"] and config.load()["rules"]["crypto"]["stop_c"] == 0
+            assert r["ok"] and all(w["stop_c"] == 0 for w in config.load()["rules"]["crypto"]["windows"])
             r = await (await client.post("/api/settings", json={"rules": {"crypto": {"stop_c": 0.5}}})).json()
             assert not r["ok"]
 
@@ -265,7 +265,7 @@ def test_switch_saves_even_if_other_fields_are_bad(home):
         cfg = config.load()
         cfg["env"] = "fake"
         point_at(free_port())
-        cfg["rules"]["crypto"]["stop_c"] = 99          # an invalid value already saved (stop above the band)
+        cfg["rules"]["crypto"]["windows"][0]["stop_c"] = 99   # an invalid value already saved (stop above the band)
         eng = Engine(cfg)
         client = TestClient(TestServer(build(eng)))
         await client.start_server()

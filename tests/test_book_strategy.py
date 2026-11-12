@@ -134,8 +134,9 @@ def test_old_config_becomes_one_window(tmp_path, monkeypatch):
     (tmp_path / "config.json").write_text(json.dumps({"rules": {"crypto": {
         "enabled": True, "start_s": 600, "end_s": 700, "lo_c": 98.0, "hi_c": 99.0, "contracts": 2, "stop_c": 40}}}))
     c = config.load()
-    assert c["rules"]["crypto"]["windows"] == [{"start_s": 600, "end_s": 700, "lo_c": 98.0, "hi_c": 99.0, "contracts": 2}]
-    assert "lo_c" not in c["rules"]["crypto"] and c["rules"]["crypto"]["stop_c"] == 40
+    assert c["rules"]["crypto"]["windows"] == [{"start_s": 600, "end_s": 700, "lo_c": 98.0, "hi_c": 99.0, "contracts": 2,
+                                                "stop_c": 40, "stop_ms": 1000}]
+    assert "lo_c" not in c["rules"]["crypto"] and "stop_c" not in c["rules"]["crypto"]
     assert c["rules"]["commodity"]["windows"][0]["end_s"] == 780                 # untouched default
 
 
@@ -160,3 +161,39 @@ def test_rebuild_result_from_kalshi_fills():
     r = rebuild_result([f("bid", 97, 1), f("ask", 40, 1, 0.02)], "yes", "no")
     assert (r["bought"], r["sold"], r["outcome"]) == (1, 1, "sold") and abs(r["pnl_c"] - (40 - 2 - 97)) < 1e-6
     assert rebuild_result([], "yes", "yes") is None
+
+
+def test_rule_wide_stop_moves_into_each_window(tmp_path, monkeypatch):
+    """A 0.8 config (windows list + one rule-wide stop) keeps its stop, now per window."""
+    import json
+    from fastmaker import config
+    monkeypatch.setattr(config, "CONFIG", tmp_path / "config.json")
+    w = {"start_s": 540, "end_s": 720, "lo_c": 97.0, "hi_c": 99.5, "contracts": 1}
+    (tmp_path / "config.json").write_text(json.dumps({"rules": {"commodity": {
+        "windows": [w, dict(w, start_s=800, end_s=880)], "stop_c": 0, "stop_ms": 2000}}}))
+    c = config.load()["rules"]["commodity"]
+    assert [(x["stop_c"], x["stop_ms"]) for x in c["windows"]] == [(0, 2000), (0, 2000)]
+
+
+def test_each_window_has_its_own_stop():
+    from fastmaker.config import window
+    r = rule(windows=[window(120, 300, 96.0, 99.5, 1, stop_c=0, stop_ms=0),        # hold
+                      window(540, 720, 96.0, 99.5, 1, stop_c=60, stop_ms=0)])       # stop at 60
+    b = make_book()
+    crash = Book("T")
+    crash.snapshot({"yes_dollars_fp": [["0.4000", "10"]], "no_dollars_fp": [["0.5500", "10"]]}, 0)
+    # bought in window 1 (hold): still held during window 2 even though window 2's stop would fire
+    st = State("T")
+    decide(r, st, 200, 0, b.view("yes"), "yes")
+    st.held, st.side, st.cost_c = 1, "yes", 97.1
+    assert decide(r, st, 600, 10, crash.view("yes"), "yes", 1) == []
+    assert "no stop" in st.note
+    # bought in window 2: its 60c stop applies
+    st2 = State("T")
+    decide(r, st2, 600, 0, b.view("yes"), "yes")
+    st2.held, st2.side = 1, "yes"
+    acts = decide(r, st2, 650, 10, crash.view("yes"), "yes", 1)
+    assert acts and acts[0].kind == "sell"
+    # after a restart (window unknown): the latest window that has started
+    st3 = State("T", side="yes", held=1)
+    assert decide(r, st3, 800, 10, crash.view("yes"), "yes", 1)[0].kind == "sell"

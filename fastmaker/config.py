@@ -43,18 +43,20 @@ WS_SIGN_PATH = "/trade-api/ws/v2"
 
 # One rule per group. Each rule has one or more trading windows (seconds into the 15-minute market;
 # prices in cents); the stop and fast pull are shared because they protect whatever we hold.
-WINDOW_KEYS = ("start_s", "end_s", "lo_c", "hi_c", "contracts")
+WINDOW_KEYS = ("start_s", "end_s", "lo_c", "hi_c", "contracts", "stop_c", "stop_ms")
+STOP_KEYS = ("stop_c", "stop_ms")
 MAX_WINDOWS = 8
 
 
-def window(start_s=540, end_s=720, lo_c=97.0, hi_c=99.5, contracts=1) -> dict:
-    return {"start_s": start_s, "end_s": end_s, "lo_c": lo_c, "hi_c": hi_c, "contracts": contracts}
+def window(start_s=540, end_s=720, lo_c=97.0, hi_c=99.5, contracts=1, stop_c=50.0, stop_ms=1000) -> dict:
+    """One trading window. stop_c/stop_ms: sell if our side's bid stays below stop_c this long (0 = hold)."""
+    return {"start_s": start_s, "end_s": end_s, "lo_c": lo_c, "hi_c": hi_c, "contracts": contracts,
+            "stop_c": stop_c, "stop_ms": stop_ms}
 
 
 DEFAULT_RULE = {
     "enabled": True,
     "windows": [window()],               # bid when the favourite's best bid is in [lo, hi) between start and end
-    "stop_c": 50.0, "stop_ms": 1000,     # sell if our side's bid stays below stop_c this long
     "pull": True, "pull_drop_c": 1.5, "pull_ms": 1500, "pull_cooldown_ms": 5000,
 }
 
@@ -65,6 +67,8 @@ def normalize_rule(r: dict) -> dict:
     legacy = {k: r.pop(k) for k in WINDOW_KEYS if k in r}
     if not r.get("windows"):
         r["windows"] = [window(**legacy)] if legacy else [window()]
+    else:                                       # a rule-wide stop (older configs) becomes each window's stop
+        r["windows"] = [dict({k: legacy[k] for k in STOP_KEYS if k in legacy}, **w) for w in r["windows"]]
     r["windows"] = sorted((dict(window(), **w) for w in r["windows"]), key=lambda w: w["start_s"])
     return r
 DEFAULTS = {

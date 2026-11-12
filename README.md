@@ -8,7 +8,7 @@ About 1,800 lines of Python plus the web page, with no optimiser or calibration 
 
 During each 15-minute window, between `start` and `end` seconds in, it looks at the market's favourite. If that side's best bid is inside the price band, it rests a post-only buy one tick above that bid, never at or through the offer. It moves up only when someone else outbids it, so it never chases its own order. It holds to settlement.
 
-Each rule can have **several trading windows** (Settings → the rule's card → *+ Add window*). Each window has its own time range, price band and contract count, for example 9:00–12:00 at 97–99.5¢ ×1 plus 14:30–14:55 at 98–99.5¢ ×2. Windows can't overlap. The market stop and fast pull are shared by all of a rule's windows, because they protect whatever is held. Outside every window, resting bids are cancelled and held contracts are kept.
+Each rule can have **several trading windows** (Settings → the rule's card → *+ Add window*). Each window has its own time range, price band, contract count and **market stop** (0 = hold to settlement), for example 9:00–12:00 at 97–99.5¢ ×1 with a 50¢ stop plus 14:30–14:55 at 98–99.5¢ ×2 holding. Windows can't overlap. Contracts keep the stop of the window that bought them, even after that window ends. The fast pull is shared by all of a rule's windows. Outside every window, resting bids are cancelled and held contracts are kept.
 
 Defaults (one window each):
 

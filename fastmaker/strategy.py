@@ -4,7 +4,8 @@ Early favourite maker (what the research supported):
   * between start_s and end_s seconds into the window, if the market's favourite has its best bid in
     [lo_c, hi_c), rest a buy one tick above that bid (never at or above the offer)
   * move up only when someone else outbids us; never chase our own order
-  * hold to settlement; sell everything if our side's bid stays below stop_c for stop_ms
+  * hold to settlement; sell everything if our side's bid stays below the window's stop_c for its stop_ms
+    (the stop of the window that bought the position, even after that window has ended; 0 = hold)
 
 Speed additions (only useful with a fast connection):
   * pull: if our side's mid falls by pull_drop_c within pull_ms, cancel at once and wait pull_cooldown_ms
@@ -75,6 +76,7 @@ class State:
     exiting: bool = False
     cooldown_until_ms: float = 0.0
     last_sell_ms: float = 0.0          # live: when the last stop sell went out (fills arrive on the feed)
+    stop: tuple | None = None          # (stop_c, stop_ms) of the window that placed our latest bid
     mids: deque = field(default_factory=lambda: deque(maxlen=400))
     note: str = "waiting"
 
@@ -114,6 +116,17 @@ def next_window(rule: dict, secs: float) -> dict | None:
     return min(later, key=lambda w: w["start_s"]) if later else None
 
 
+def stop_for(rule: dict, st: State, secs: float) -> tuple[float, int]:
+    """The stop protecting what we hold: the window that bought it; after a restart (unknown), the window
+    we're in, else the last one that has started, else the first."""
+    if st.stop is not None:
+        return st.stop
+    wins = rule.get("windows") or []
+    w = active_window(rule, secs) or next((x for x in reversed(wins) if x["start_s"] <= secs), None) or \
+        (wins[0] if wins else {"stop_c": 50.0, "stop_ms": 1000})
+    return float(w["stop_c"]), int(w["stop_ms"])
+
+
 def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | None, want_qty: int | None = None,
            ranges=None) -> list[Action]:
     """view: book.View for st.side (or for fav when no side yet), with our own order removed.
@@ -134,16 +147,17 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
             acts.append(Action("sell", side, max(math.floor((view.bid or 1) - 5), 1), st.held, "stop: still selling"))
             return acts
         b = view.bid
-        if rule["stop_c"] <= 0:                        # stop 0 = hold to settlement, never sell
+        stop_c, stop_ms = stop_for(rule, st, secs)
+        if stop_c <= 0:                                # stop 0 = hold to settlement, never sell
             st.low_since_ms = None
             st.note = f"holding {st.held} {side.upper()} to settlement (no stop)"
-        elif b is not None and b < rule["stop_c"]:
+        elif b is not None and b < stop_c:
             if st.low_since_ms is None:
                 st.low_since_ms = now_ms
-            if now_ms - st.low_since_ms >= rule["stop_ms"]:
+            if now_ms - st.low_since_ms >= stop_ms:
                 st.exiting = True
                 acts.append(Action("sell", side, max(math.floor(b - 5), 1), st.held,
-                                   f"stop: bid {b:g}c under {rule['stop_c']:g}c for {rule['stop_ms']} ms"))
+                                   f"stop: bid {b:g}c under {stop_c:g}c for {stop_ms} ms"))
                 return acts
             st.note = f"holding {st.held} {side.upper()}, bid {b:g}c below stop"
         else:
@@ -199,9 +213,11 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
         if b > st.order.price + 1e-9 and price > st.order.price + 1e-9:     # someone else outbid us
             acts.append(Action("cancel", reason=f"outbid at {b:g}"))
             acts.append(Action("place", side, price, qty, f"move up to {price:g}"))
+            st.stop = (float(win["stop_c"]), int(win["stop_ms"]))
         else:
             st.note = f"bid {st.order.side.upper()} {st.order.price:g}c (market {b:g}/{a:g})"
         return acts
     if qty > 0:
         acts.append(Action("place", side, price, qty, f"favourite {side.upper()} {b:g}/{a:g}"))
+        st.stop = (float(win["stop_c"]), int(win["stop_ms"]))     # what we buy here keeps this window's stop
     return acts
