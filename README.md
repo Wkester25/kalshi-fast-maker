@@ -90,6 +90,26 @@ Recording never slows trading: the trading loop only hands each row to a backgro
 
 Results, the event log and order ids are in `data/fastmaker.db` (SQLite, write-ahead mode).
 
+## Tuning the fast pull and stops
+
+`tools/tune.py` finds the best fast-pull and stop settings for your active trading windows from the recorded data:
+
+```bash
+# on the server (reads /opt/fastmaker/data and config.json)
+sudo -u fastmaker /opt/fastmaker/.venv/bin/python /opt/fastmaker/tools/tune.py
+# options: --group commodity|crypto   --days 3   --all-markets   --workers 2   --json report.json
+
+# or on a PC (Python 3.10+, nothing to install): unzip downloads from the Data tab into one folder, then
+python tools/tune.py --data path\to\folder --config path\to\a\copy\of\config.json
+```
+
+- Every recorded market is replayed through the bot's own decision code, in the order the server received the data, so the replay never uses information the bot didn't have.
+- Fills are simulated like paper mode. A stop sells at the bid less 0.5¢ plus the taker fee; otherwise the position settles on the market's result.
+- Fast pull is tuned per rule, because it's shared by the rule's windows. Each window gets its own stop.
+- Settings are picked on the earliest 70% of markets and judged on the latest 30%. A change is suggested only if it also beats your current settings on that held-out 30% with at least 30 fills. Otherwise the tuner says to keep your settings or collect more data.
+- It runs at the lowest CPU priority on all cores but one, so the bot isn't slowed. A busy day takes a few minutes and about 200 MB of memory.
+- Results are per contract. Daily loss limits and market caps aren't applied.
+
 ## Security
 
 The dashboard is plain HTTP and protected by the password: it uses a 30-day session cookie, locks out for 5 minutes after 5 wrong tries, and changing the password signs everyone out. On a server open to the internet, do one of the following:
@@ -119,6 +139,7 @@ fastmaker/store.py     results/events (SQLite), background recorder, exports
 fastmaker/web.py       dashboard server + API
 fastmaker/static/      the web page
 deploy/                install script + systemd unit
+tools/tune.py          fast-pull and stop tuner on recorded data
 tests/                 unit tests + a fake Kalshi exchange (python -m pytest)
 ```
 

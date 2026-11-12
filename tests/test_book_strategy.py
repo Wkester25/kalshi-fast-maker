@@ -197,3 +197,12 @@ def test_each_window_has_its_own_stop():
     # after a restart (window unknown): the latest window that has started
     st3 = State("T", side="yes", held=1)
     assert decide(r, st3, 800, 10, crash.view("yes"), "yes", 1)[0].kind == "sell"
+
+
+def test_stop_fires_when_our_side_has_no_bids():
+    b = Book("T")
+    b.snapshot({"yes_dollars_fp": [], "no_dollars_fp": [["0.9900", "50"]]}, 0)     # nobody bids for YES
+    st = State("T", side="yes", held=1, cost_c=97)
+    r = rule(stop_c=50, stop_ms=0)
+    acts = decide(r, st, 700, 0, b.view("yes"), "yes", 1)
+    assert acts and acts[0].kind == "sell" and acts[0].price == 1
