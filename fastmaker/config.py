@@ -76,6 +76,8 @@ DEFAULTS = {
         "crypto": dict(DEFAULT_RULE, enabled=False),   # newer data didn't support crypto; paper-test before live
         "commodity": dict(DEFAULT_RULE, windows=[window(540, 780, 96.0, 99.5, 1)]),
     },
+    # position size: every window's contracts x multiplier x reinvest growth, rounded down, at least 1
+    "sizing": {"multiplier": 1.0, "reinvest_pct": 0.0, "bankroll_usd": 100.0, "reinvest_since": 0.0},
     "limits": {"daily_loss_usd": 20.0, "max_open_crypto": 6, "max_open_commodity": 7,
                "max_order_usd": 25.0, "stop_after_losses": 6},
     "news_skip": {"enabled": True, "times_et": ["08:30", "10:00"], "weekdays_only": True},

@@ -63,6 +63,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 - **Paper** is the default. It uses the same decisions as live. A paper fill counts only when a real Kalshi trade prints at or through our price, after the queue that was ahead of us when we joined.
 - **Live** needs your password to switch on and again to start trading.
 - **Stop all** switches trading off and cancels every resting order on the account.
+- **Position size** (Settings, plus the *Size ×* box on the dashboard): a multiplier applied to every window's contracts (rounded down, at least 1). Optionally **reinvest a % of profit**: size grows by (bankroll + reinvest% × profit) / bankroll, where profit is counted in the current mode from when reinvesting was switched on. Losses shrink it the same way. The max-per-order and daily loss limits still cap every order.
 - **Settings** take effect the moment you save. Limits are the daily loss limit, the maximum per order, the maximum markets open at once per group, and a stop after N losses in a day. Windows around 8:30 and 10:00 ET news are skipped by default.
 - Paper and live results are kept separately. The dashboard shows today's results, all-time, per contract, by day, every trade and an activity log.
 

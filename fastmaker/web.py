@@ -172,7 +172,7 @@ def build(engine) -> web.Application:
     # ---- api
     async def state(_):
         st = engine.status()
-        st["settings"] = {k: cfg[k] for k in ("markets", "rules", "limits", "news_skip", "env", "record")}
+        st["settings"] = {k: cfg[k] for k in ("markets", "rules", "limits", "news_skip", "env", "record", "sizing")}
         st["version"] = __version__
         return web.json_response(st)
 
@@ -216,6 +216,25 @@ def build(engine) -> web.Application:
                     errs.append(f"{g}: {err}")
                 else:
                     cfg["rules"][g] = new
+        if "sizing" in body:
+            z, cur = body["sizing"], cfg["sizing"]
+            try:
+                new = dict(cur)
+                for k in ("multiplier", "reinvest_pct", "bankroll_usd"):
+                    if k in z:
+                        new[k] = float(z[k])
+                if not 0.1 <= new["multiplier"] <= 100:
+                    raise ValueError("multiplier must be 0.1-100")
+                if not 0 <= new["reinvest_pct"] <= 100:
+                    raise ValueError("reinvest must be 0-100%")
+                if not 1 <= new["bankroll_usd"] <= 10_000_000:
+                    raise ValueError("starting bankroll must be at least $1")
+                if new["reinvest_pct"] > 0 and (cur["reinvest_pct"] == 0 or z.get("restart")):
+                    new["reinvest_since"] = time.time()          # profit counts from now
+                cfg["sizing"] = new
+                engine._size_t = 0
+            except (TypeError, ValueError) as e:
+                errs.append(f"position size: {e}")
         if "limits" in body:
             try:
                 for k, lo, hi in (("daily_loss_usd", 1, 1e6), ("max_order_usd", 1, 1e6), ("max_open_crypto", 1, 15),

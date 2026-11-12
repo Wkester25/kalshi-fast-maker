@@ -221,3 +221,10 @@ textarea.in { min-height: 150px; resize: vertical; }
 .row-del { width: 26px; height: 26px; font-size: 15px; opacity: .5; }
 tr:hover .row-del { opacity: 1; }
 .row-del:hover { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+
+/* position size */
+.size-q { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
+.size-q .in { width: 64px; padding: 5px 8px; text-align: center; }
+.size-eff { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.size-now { padding: 8px 0; font-weight: 600; }
+.size-now span { color: var(--muted); font-weight: 400; }

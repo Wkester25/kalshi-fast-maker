@@ -42,6 +42,9 @@
         <label class="sw"><input type="checkbox" id="q-crypto"><span class="track"></span><span>Crypto</span></label>
         <label class="sw"><input type="checkbox" id="q-commodity"><span class="track"></span><span>Commodities</span></label>
       </div>
+      <label class="size-q" title="Global contracts multiplier (Settings → Position size for reinvesting)">Size ×
+        <input class="in num" id="q-mult" inputmode="decimal" aria-label="Contracts multiplier"></label>
+      <span class="size-eff" id="size-eff"></span>
       <span class="why" id="ctl-why"></span>
       <div class="spacer"></div>
       <button class="btn danger" id="stopall">Stop all &amp; cancel orders</button>
@@ -95,6 +98,21 @@
       <div class="card">
         <div class="card-h"><h2>Markets</h2><span class="sub">which windows to trade</span></div>
         <div class="card-b"><div class="chips" id="mkts"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Position size</h2><span class="sub">applies to every window</span></div>
+        <div class="card-b">
+          <div class="fields">
+            <div class="f"><label for="z-mult">Contracts multiplier</label><input class="in num" id="z-mult" inputmode="decimal">
+              <div class="hint">×2 doubles every window's contracts; rounded down, never below 1</div></div>
+            <div class="f"><label for="z-pct">Reinvest % of profit</label><input class="in num" id="z-pct" inputmode="decimal">
+              <div class="hint">0 = off. 25 = a quarter of profit goes into bigger orders</div></div>
+            <div class="f"><label for="z-bank">Starting bankroll ($)</label><input class="in num" id="z-bank" inputmode="decimal">
+              <div class="hint">what the base size is meant for</div></div>
+            <div class="f"><label>Current size</label><div class="size-now" id="z-now">—</div></div>
+          </div>
+          <div class="row" style="margin-top:12px"><button class="btn sm" id="z-restart">Restart profit count from now</button></div>
+        </div>
       </div>
       <div class="card">
         <div class="card-h"><h2>Limits</h2><span class="sub">applied to the current mode</span></div>

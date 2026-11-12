@@ -92,6 +92,10 @@ class Store:
         return {"trades": n or 0, "pnl_c": pnl or 0.0, "lost": lost or 0, "stopped": sold or 0,
                 "contracts": contracts or 0, "per_contract_c": (pnl / contracts) if contracts else 0.0}
 
+    def pnl_since(self, mode: str, ts: float) -> float:
+        return self.db.execute("SELECT COALESCE(SUM(pnl_c),0) FROM results WHERE mode=? AND ts>=?",
+                               (mode, ts)).fetchone()[0] or 0.0
+
     def by_coin(self, mode: str, day: str) -> dict[str, float]:
         rows = self.db.execute("SELECT coin, SUM(pnl_c) FROM results WHERE mode=? AND day=? GROUP BY coin",
                                (mode, day)).fetchall()

@@ -21,7 +21,7 @@ from . import config
 from .book import Book
 from .kalshi import Feed, KalshiError, Rest, dollars_c, iso_ts
 from .store import Recorder, Store, et_day
-from .strategy import WHOLE_CENT, Action, Order, State, decide, parse_ranges
+from .strategy import WHOLE_CENT, Action, Order, State, active_window, decide, parse_ranges
 
 log = logging.getLogger("engine")
 PAPER_LATENCY_MS = 60
@@ -294,7 +294,11 @@ class Engine:
         own = st.order
         view = s.book.view(side, own.price if own else None, (own.qty - own.filled) if own else 0)
         can_trade, why = self.can_trade(s)
-        want = None if can_trade else max(st.held, 0)            # None: the active window's contracts
+        if can_trade:
+            win = active_window(rule, secs)
+            want = self.scaled(int(win["contracts"])) if win else 0
+        else:
+            want = max(st.held, 0)
         acts = decide(rule, st, secs, now_ms, view, fav, want, s.ranges)
         if not can_trade:
             if why and st.held == 0:
@@ -337,6 +341,25 @@ class Engine:
             if busy >= cap:
                 return False, f"waiting: {busy} {s.group} markets already in play (max {cap})"
         return True, ""
+
+    # ------------------------------------------------------------ position size
+    def sizing(self) -> dict:
+        """Multiplier x reinvest growth, cached for a second. Growth = (bankroll + reinvest% x profit) / bankroll,
+        profit counted in the current mode since reinvesting was switched on (losses shrink it)."""
+        now = time.time()
+        if now - getattr(self, "_size_t", 0) < 1.0 and getattr(self, "_size_mode", None) == self.cfg["mode"]:
+            return self._size
+        z = self.cfg["sizing"]
+        mult, pct, bank = float(z["multiplier"]), float(z["reinvest_pct"]), max(float(z["bankroll_usd"]), 1.0)
+        profit = self.store.pnl_since(self.cfg["mode"], z["reinvest_since"]) / 100 if pct > 0 else 0.0
+        growth = max(bank + pct / 100 * profit, 0.0) / bank if pct > 0 else 1.0
+        self._size = {"multiplier": mult, "reinvest_pct": pct, "bankroll_usd": bank, "profit_usd": round(profit, 2),
+                      "growth": round(growth, 4), "factor": round(mult * growth, 4), "since": z["reinvest_since"]}
+        self._size_t, self._size_mode = now, self.cfg["mode"]
+        return self._size
+
+    def scaled(self, contracts: int) -> int:
+        return max(1, math.floor(contracts * self.sizing()["factor"] + 1e-9))
 
     def today(self) -> dict:
         """Today's results for the current mode, cached for a second (checked on every book change)."""
@@ -716,7 +739,7 @@ class Engine:
             "rest_ms": self.rest.rtt_ms, "uptime_s": now - self.started,
             "today": self.store.summary(mode, et_day()), "all": self.store.summary(mode),
             "other_today": self.store.summary("paper" if mode == "live" else "live", et_day()),
-            "open_risk_c": self.open_risk_c(), "markets": rows,
+            "open_risk_c": self.open_risk_c(), "markets": rows, "sizing": self.sizing(),
             "events": self.store.recent_events(40), "results": self.store.recent_results(25),
             "daily": self.store.daily(mode),
         }

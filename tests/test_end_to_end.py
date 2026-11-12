@@ -396,3 +396,60 @@ def test_closed_market_is_shown_and_reopens(home):
             await eng.stop()
             await runner.cleanup()
     asyncio.run(go())
+
+
+def test_position_size_multiplier_and_reinvest(home):
+    async def go():
+        cfg = config.load()
+        cfg["env"] = "fake"
+        point_at(free_port())
+        eng = Engine(cfg)
+        client = TestClient(TestServer(build(eng)))
+        await client.start_server()
+        try:
+            await client.post("/setup", json={"password": "correct horse"})
+            assert eng.scaled(1) == 1 and eng.scaled(3) == 3
+            r = await (await client.post("/api/settings", json={"sizing": {"multiplier": 2.5}})).json()
+            assert r["ok"] and eng.scaled(1) == 2 and eng.scaled(2) == 5
+            assert not (await (await client.post("/api/settings", json={"sizing": {"multiplier": 0}})).json())["ok"]
+            # reinvest 50% with a $100 bankroll; profit before switching on doesn't count
+            eng.store.result("paper", "GOLD", "T0", "no", 1, 97.0, 0, "won", 10000.0)      # +$100 earlier
+            r = await (await client.post("/api/settings", json={"sizing": {"multiplier": 1, "reinvest_pct": 50,
+                                                                           "bankroll_usd": 100}})).json()
+            assert r["ok"] and eng.sizing()["factor"] == 1.0
+            time.sleep(0.01)
+            eng.store.result("paper", "GOLD", "T1", "no", 1, 97.0, 0, "won", 10000.0)      # +$100 after
+            eng._size_t = 0
+            z = eng.sizing()
+            assert z["profit_usd"] == 100 and z["growth"] == 1.5 and eng.scaled(2) == 3
+            eng.store.result("paper", "GOLD", "T2", "no", 1, 97.0, 0, "lost", -30000.0)    # -$300: shrinks
+            eng._size_t = 0
+            assert eng.sizing()["factor"] == 0.0 and eng.scaled(5) == 1                   # never below 1
+            st = await (await client.get("/api/state")).json()
+            assert st["sizing"]["reinvest_pct"] == 50
+        finally:
+            await client.close()
+            await eng.stop()
+    asyncio.run(go())
+
+
+def test_live_order_uses_multiplier(home):
+    async def go():
+        port = free_port()
+        point_at(port)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="live", trading=True)
+        cfg["sizing"]["multiplier"] = 3
+        eng = Engine(cfg)
+        await eng.start()
+        try:
+            gold = eng.slots["GOLD"]
+            assert await wait_for(lambda: any(o["ticker"] == gold.ticker for o in fake.orders), 5)
+            assert next(o for o in fake.orders if o["ticker"] == gold.ticker)["count"] == "3.00"
+        finally:
+            await eng.stop()
+            await runner.cleanup()
+    asyncio.run(go())

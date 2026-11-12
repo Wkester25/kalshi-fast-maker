@@ -132,6 +132,29 @@ $("#res").addEventListener("click", async (e) => {
   refresh();
 });
 
+/* ---------------- position size */
+const fmtX = (x) => "×" + (+x).toFixed(2).replace(/\.?0+$/, "");
+function sizeText(z) {
+  if (!z) return "";
+  let t = `effective ${fmtX(z.factor)}`;
+  if (z.reinvest_pct > 0) t += ` (base ${fmtX(z.multiplier)} · reinvest ${z.reinvest_pct}% of ${usd(z.profit_usd * 100)})`;
+  return t;
+}
+const qm = $("#q-mult");
+qm.addEventListener("focus", () => (qm.dataset.busy = "1"));
+qm.addEventListener("blur", async () => {
+  delete qm.dataset.busy;
+  if (S && +qm.value !== +S.settings.sizing.multiplier) {
+    if (await quickSave({ sizing: { multiplier: qm.value } }, `Size ${fmtX(qm.value)}`)) $("#z-mult").value = S.settings.sizing.multiplier;
+  }
+});
+qm.addEventListener("keydown", (e) => { if (e.key === "Enter") qm.blur(); if (e.key === "Escape") { qm.value = S.settings.sizing.multiplier; qm.blur(); } });
+$("#z-restart").onclick = async () => {
+  if (!S || !(+S.settings.sizing.reinvest_pct > 0)) { toast("Turn reinvesting on first (Reinvest % above 0)", false); return; }
+  if (!confirm("Count reinvested profit from now? Size goes back to the multiplier alone until new profit comes in.")) return;
+  await quickSave({ sizing: { restart: true } }, "Profit count restarted");
+};
+
 /* ---------------- render */
 function render() {
   const s = S;
@@ -157,6 +180,13 @@ function render() {
   const on = Object.entries(rules).filter(([, r]) => r.enabled).map(([g, r]) => `${g} ${winSummary(r)}`);
   $("#ctl-why").textContent = on.length ? on.join("  ·  ") : "both rules are off - nothing will be bid";
   for (const g of ["crypto", "commodity"]) { const q = $("#q-" + g); if (!q.dataset.busy) q.checked = !!rules[g].enabled; }
+  if (!qm.dataset.busy) qm.value = s.settings.sizing.multiplier;
+  if (formLoaded && !$("#save-msg").classList.contains("dirty") && document.activeElement !== $("#z-mult"))
+    $("#z-mult").value = s.settings.sizing.multiplier;          // the dashboard box and Settings stay in step
+  $("#size-eff").textContent = s.sizing && (s.sizing.factor !== 1 || s.sizing.reinvest_pct > 0) ? sizeText(s.sizing) : "";
+  $("#z-now").innerHTML = s.sizing ? `${fmtX(s.sizing.factor)} <span>${s.sizing.reinvest_pct > 0
+    ? `= ${fmtX(s.sizing.multiplier)} × ${s.sizing.growth.toFixed(3)} growth from ${usd(s.sizing.profit_usd * 100)} ${s.mode} profit since ${new Date(s.sizing.since * 1000).toLocaleDateString()}`
+    : "(reinvesting off)"}</span>` : "—";
 
   // kpis
   const t = s.today, a = s.all;
@@ -229,7 +259,8 @@ const SHARED_FIELDS = [
 ];
 const WIN_COLS = [["start_s", "From"], ["end_s", "Until"], ["lo_c", "Bid ≥ ¢"], ["hi_c", "Bid < ¢"], ["contracts", "Qty"]];
 const toSecs = (v) => { const t = String(v).trim(); if (t.includes(":")) { const [m, x] = t.split(":"); return (+m || 0) * 60 + (+x || 0); } return +t || 0; };
-const winSummary = (r) => r.windows.map((w) => `${mmss(w.start_s)}–${mmss(w.end_s)} ${w.lo_c}–${w.hi_c}¢ ×${w.contracts}`).join(", ")
+const scaledQty = (n) => Math.max(1, Math.floor(n * ((S && S.sizing && S.sizing.factor) || 1) + 1e-9));
+const winSummary = (r) => r.windows.map((w) => `${mmss(w.start_s)}–${mmss(w.end_s)} ${w.lo_c}–${w.hi_c}¢ ×${scaledQty(w.contracts)}`).join(", ")
   + (+r.stop_c ? `, stop ${r.stop_c}¢` : ", no stop");
 
 function winRow(w) {
@@ -295,6 +326,7 @@ function fillForm(st) {
     await quickSave({ markets: { [i.dataset.c]: i.checked } }, `${i.dataset.c} ${i.checked ? "on" : "off"}`);
   }));
   $("#limits").innerHTML = LIMIT_FIELDS.map(([k, l]) => `<div class="f"><label>${l}</label><input class="in num" data-l="${k}" value="${st.limits[k]}" inputmode="decimal"></div>`).join("");
+  $("#z-mult").value = st.sizing.multiplier; $("#z-pct").value = st.sizing.reinvest_pct; $("#z-bank").value = st.sizing.bankroll_usd;
   $("#ns-on").checked = !!st.news_skip.enabled;
   $("#ns-times").value = (st.news_skip.times_et || []).join(", ");
   $$("#env-seg button").forEach((b) => b.classList.toggle("on", b.dataset.e === st.env));
@@ -322,7 +354,8 @@ $("#save").onclick = async () => {
   const markets = {}; $$("#mkts input").forEach((i) => (markets[i.dataset.c] = i.checked));
   const limits = {}; $$("#limits input").forEach((i) => (limits[i.dataset.l] = i.value));
   const env = $("#env-seg button.on")?.dataset.e;
-  const r = await api("/api/settings", { rules, markets, limits, env, news_skip: { enabled: $("#ns-on").checked, times_et: $("#ns-times").value } });
+  const sizing = { multiplier: $("#z-mult").value, reinvest_pct: $("#z-pct").value, bankroll_usd: $("#z-bank").value };
+  const r = await api("/api/settings", { rules, markets, limits, env, sizing, news_skip: { enabled: $("#ns-on").checked, times_et: $("#ns-times").value } });
   const m = $("#save-msg");
   await refresh();
   if (r.ok) { formLoaded = false; fillForm(S.settings); m.className = "msg ok"; m.textContent = "Saved — in effect now."; }
