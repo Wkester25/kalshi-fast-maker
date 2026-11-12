@@ -14,6 +14,7 @@
     <nav class="tabs" id="tabs">
       <button data-v="dash" class="on">Dashboard</button>
       <button data-v="settings">Settings</button>
+      <button data-v="data">Data</button>
       <button data-v="keys">API key</button>
     </nav>
     <div class="spacer"></div>
@@ -134,6 +135,36 @@
       </div>
     </div>
     <div class="savebar sticky"><button class="btn primary" id="save">Save settings</button><button class="btn" id="revert">Discard changes</button><span class="msg" id="save-msg"></span></div>
+  </section>
+
+  <!-- ================= DATA ================= -->
+  <section class="view" id="v-data">
+    <div class="grid cols-2">
+      <div class="card" style="align-self:start">
+        <div class="card-h"><h2>Recording</h2><span class="sub">written on a background thread - never slows trading</span></div>
+        <div class="card-b grid" style="gap:14px">
+          <label class="sw"><input type="checkbox" data-rec="record"><span class="track"></span><span><b>Market data</b> - best bid/offer changes, trades, index values, market results</span></label>
+          <label class="sw"><input type="checkbox" data-rec="record_depth"><span class="track"></span><span><b>Full order book</b> - every price level and every change (the largest files)</span></label>
+          <label class="sw"><input type="checkbox" data-rec="record_orders"><span class="track"></span><span><b>Order timing</b> - each bid, cancel, fill and stop with Kalshi's response time and the market at that moment</span></label>
+          <div class="sep" style="margin:2px 0"></div>
+          <div class="grid" style="gap:8px" id="rec-health"></div>
+          <div class="hint" style="color:var(--faint);font-size:12px">One file per stream per hour (UTC), so every finished hour is complete. The current hour is still being written.</div>
+        </div>
+      </div>
+      <div class="card" style="align-self:start">
+        <div class="card-h"><h2>Downloads</h2><div class="spacer"></div><button class="btn sm" id="data-refresh">Refresh</button></div>
+        <div class="card-b" style="padding-bottom:6px">
+          <div class="row">
+            <a class="btn sm" href="/api/data/table/results" download>Results (CSV)</a>
+            <a class="btn sm" href="/api/data/table/events" download>Activity log (CSV)</a>
+          </div>
+        </div>
+        <div class="scroll"><table>
+          <thead><tr><th>Day (UTC)</th><th class="n">Files</th><th class="n">Size</th><th></th></tr></thead>
+          <tbody id="days"></tbody>
+        </table></div>
+      </div>
+    </div>
   </section>
 
   <!-- ================= KEYS ================= -->

@@ -71,9 +71,24 @@ Suggested path: run paper for at least a week (several hundred trades). Go live 
 
 ## Data for later analysis
 
-`data/rec/<day>/` holds gzipped CSVs: top-of-book changes, trades, CF Benchmarks index values and market results. Every row is stamped with the time this server received it (`recv_ms`). Backtests on this data therefore can't look ahead the way the old logs allowed, which was the flaw the review found. It uses about 50–150 MB per day; turn it off with `"record": false` in `config.json`.
+Everything is under `data/` and can be downloaded from the **Data** tab: a zip per day, plus results and the activity log as CSV. Each kind of recording can be switched on or off there.
 
-Results and the event log are in `data/fastmaker.db` (SQLite).
+`data/rec/<UTC day>/` holds one gzipped CSV per stream per UTC hour (`book-14.csv.gz` and so on), so every finished hour is a complete file:
+
+| Stream | Contents |
+|---|---|
+| `book` | every change to the best bid/offer, with sizes |
+| `depth` | the full order book: `snap` rows list every level of a fresh book, `delta` rows are each change (with Kalshi's own timestamp) |
+| `trade` | every trade printed: price, size, taker side |
+| `index` | CF Benchmarks index values for the crypto markets |
+| `market` | each market's ticker, open/close, strike and result |
+| `orders` | this program's own orders: bid sent, Kalshi's reply and its latency in ms, cancels, fills, stops, rejections, each with the market's bid/offer at that moment |
+
+Every row carries the time this server received it (`recv_ms`), so backtests on this data can't look ahead (the flaw the review found in the old logs). A market's book stops being recorded the moment it closes.
+
+Recording never slows trading: the trading loop only hands each row to a background writer thread. If that writer ever falls behind (or the disk fills), rows are dropped and counted, never waited for; the Data tab shows rows written, dropped and the free disk space. Downloads are built on a separate thread too.
+
+Results, the event log and order ids are in `data/fastmaker.db` (SQLite, write-ahead mode).
 
 ## Security
 
@@ -100,7 +115,7 @@ fastmaker/kalshi.py    signed REST + the WebSocket feed
 fastmaker/book.py      order book from snapshot + deltas (own order excluded)
 fastmaker/strategy.py  the rule as pure decisions (no network)
 fastmaker/engine.py    windows, decisions, paper/live orders, fills, settlement
-fastmaker/store.py     results/events (SQLite) + market recorder
+fastmaker/store.py     results/events (SQLite), background recorder, exports
 fastmaker/web.py       dashboard server + API
 fastmaker/static/      the web page
 deploy/                install script + systemd unit

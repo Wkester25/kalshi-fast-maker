@@ -85,7 +85,9 @@ DEFAULTS = {
     "limits": {"daily_loss_usd": 20.0, "max_open_crypto": 6, "max_open_commodity": 7,
                "max_order_usd": 25.0, "stop_after_losses": 6},
     "news_skip": {"enabled": True, "times_et": ["08:30", "10:00"], "weekdays_only": True},
-    "record": True,
+    "record": True,                      # top of book, trades, index values, market results
+    "record_depth": True,                # full order book depth (every level and change)
+    "record_orders": True,               # our orders, millisecond timed, with the market at that moment
     "web": {"host": "0.0.0.0", "port": 8080, "password_hash": "", "session_secret": ""},
 }
 

@@ -479,11 +479,90 @@ def test_book_not_recorded_after_close(home):
             await asyncio.sleep(0.2)
             eng.rec.close()
             day = eng.rec.day
-            rows = list(_csv.reader(gzip.open(store.DATA / "rec" / day / "book.csv.gz", "rt")))
+            rows = [r for f in sorted((store.DATA / "rec" / day).glob("book-*.csv.gz"))
+                    for r in _csv.reader(gzip.open(f, "rt"))]
             mine = [r for r in rows[1:] if r[1] == t]
             assert mine and all(len(x.split(".")[-1]) <= 2 for r in mine for x in r[2:] if x)
             assert not any(r[4] == "99.5" for r in mine)                # the post-close change isn't there
         finally:
+            await eng.stop()
+            await runner.cleanup()
+    asyncio.run(go())
+
+
+def test_recorder_never_blocks_and_counts_drops(home):
+    from fastmaker.store import Recorder
+    rec = Recorder({"record": True, "record_depth": True, "record_orders": True})
+    t0 = time.perf_counter()
+    for i in range(50_000):
+        rec.write("trade", [i, i, "T", 97.0, 1, "yes"])
+    per_call_us = (time.perf_counter() - t0) / 50_000 * 1e6
+    assert per_call_us < 50, per_call_us                    # a queue put, not disk work
+    rec.flush_now(20)
+    assert rec.stats()["written"] == 50_000 and rec.stats()["dropped"] == 0
+    rec.close()
+    small = Recorder({"record": True})
+    small.q.maxsize = 10                                    # a writer that can't keep up
+    small._thread = object()                                # (no writer at all)
+    for i in range(100):
+        small.write("trade", [i])
+    assert small.stats()["dropped"] == 90                   # dropped and counted, never blocked
+    off = Recorder({"record": False, "record_depth": False, "record_orders": False})
+    off.write("book", [1]); off.write("depth", [1]); off.write("orders", [1])
+    assert off.q.qsize() == 0
+
+
+def test_depth_and_order_timing_and_downloads(home):
+    import csv as _csv
+    import gzip
+    import io
+    import zipfile
+
+    async def go():
+        port = free_port()
+        point_at(port)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="live", trading=True)
+        eng = Engine(cfg)
+        await eng.start()
+        client = TestClient(TestServer(build(eng)))
+        await client.start_server()
+        try:
+            gold = eng.slots["GOLD"]
+            assert await wait_for(lambda: gold.st and gold.st.order and gold.st.order.order_id, 5)
+            await fake.delta(gold.ticker, "no", 3.0, 12)
+            await asyncio.sleep(0.3)
+            eng.rec.flush_now()
+            eng.rec.close()                                  # finish the files so they can be read
+            d = store.DATA / "rec" / eng.rec.day
+            read = lambda name: [r for f in sorted(d.glob(f"{name}-*.csv.gz"))   # noqa: E731
+                                 for r in _csv.DictReader(gzip.open(f, "rt"))]
+            depth = [r for r in read("depth") if r["ticker"] == gold.ticker]
+            assert any(r["kind"] == "snap" for r in depth) and any(r["kind"] == "delta" and r["qty"] for r in depth)
+            orders = [r for r in read("orders") if r["coin"] == "GOLD"]
+            ev = [r["event"] for r in orders]
+            assert "bid_sent" in ev and "bid_ack" in ev
+            ack = next(r for r in orders if r["event"] == "bid_ack")
+            assert float(ack["latency_ms"]) >= 0 and ack["order_id"] and ack["mkt_bid"]
+
+            await client.post("/setup", json={"password": "correct horse"})
+            info = await (await client.get("/api/data")).json()
+            assert info["days"][0]["day"] == eng.rec.day and info["recorder"]["dropped"] == 0
+            z = await client.get(f"/api/data/day/{eng.rec.day}")
+            assert z.status == 200
+            names = zipfile.ZipFile(io.BytesIO(await z.read())).namelist()
+            assert any("depth-" in n for n in names) and any("orders-" in n for n in names)
+            assert (await client.get("/api/data/day/..%2F..%2Fsecrets")).status == 404
+            eng.store.result("live", "GOLD", gold.ticker, "no", 1, 96.3, 0, "won", 3.7)
+            c = await client.get("/api/data/table/results")
+            assert c.status == 200 and "pnl_c" in (await c.text()).splitlines()[0]
+            r = await (await client.post("/api/settings", json={"record_depth": False})).json()
+            assert r["ok"] and not eng.rec.on("depth") and eng.rec.on("orders")
+        finally:
+            await client.close()
             await eng.stop()
             await runner.cleanup()
     asyncio.run(go())

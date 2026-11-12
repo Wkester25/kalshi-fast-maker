@@ -98,7 +98,7 @@ class Engine:
         self.cfg = cfg
         self.rest = Rest(cfg.get("env", "real"))
         self.store = Store()
-        self.rec = Recorder(cfg.get("record", True))
+        self.rec = Recorder(cfg)                  # reads the record switches live from the config
         self.feed = Feed(self.rest, self.on_ws, self.on_ws_state)
         self.slots: dict[str, Slot] = {c: Slot(c, s, g) for c, (s, g) in config.MARKETS.items()}
         self.by_ticker: dict[str, Slot] = {}
@@ -139,6 +139,19 @@ class Engine:
                            + (f"; failed: {errs}" if errs else ""))
         except Exception as e:                                         # noqa: BLE001
             self.event("warn", "", f"could not check for leftover orders: {e}")
+
+    def olog(self, event: str, s: Slot, side: str = "", price: float | None = None, qty: int | float = "",
+             cid: str = "", oid: str = "", latency_ms: float | None = None, note: str = ""):
+        """One row in the order timing file (data/rec/<day>/orders-HH.csv.gz). Cheap: queued for the writer."""
+        if not self.rec.on("orders"):
+            return
+        bid = ask = ""
+        if s.book and s.book.ready and side in ("yes", "no"):
+            v = s.book.view(side)
+            bid, ask = (v.bid if v.bid is not None else ""), (v.ask if v.ask is not None else "")
+        self.rec.write("orders", [int(time.time() * 1000), event, s.mode, s.coin, s.ticker, side,
+                                  "" if price is None else round(price, 2), qty, cid, oid,
+                                  "" if latency_ms is None else round(latency_ms, 1), bid, ask, note])
 
     def event(self, level: str, coin: str, msg: str):
         log.info("%s %s %s", level, coin, msg)
@@ -247,8 +260,16 @@ class Engine:
             before = s.book.view("yes")
             if t == "orderbook_snapshot":
                 s.book.snapshot(m, recv_ms)
+                if self.rec.on("depth"):
+                    for side in ("yes", "no"):
+                        for px, q in m.get(f"{side}_dollars_fp") or []:
+                            self.rec.write("depth", [int(recv_ms), "", s.ticker, "snap", side,
+                                                     round(float(px) * 100, 2), q])
             else:
                 s.book.delta(m, recv_ms)
+                if self.rec.on("depth"):
+                    self.rec.write("depth", [int(recv_ms), m.get("ts_ms", ""), s.ticker, "delta", m.get("side"),
+                                             round(float(m["price_dollars"]) * 100, 2), m.get("delta_fp")])
             after = s.book.view("yes")
             if (before.bid, before.ask, before.bid_size, before.ask_size) != (after.bid, after.ask, after.bid_size, after.ask_size):
                 r2 = lambda x: None if x is None else round(x, 2)   # noqa: E731  (no float noise in the files)
@@ -437,9 +458,13 @@ class Engine:
                 st.note = msg
                 return
             st.order = Order(a.side, a.price, qty, time.time() * 1000, cid)
+            self.olog("bid_sent", s, a.side, a.price, qty, cid, note=a.reason)
+            t0 = time.perf_counter()
             try:
                 r = await self.rest.place_bid(s.ticker, a.side, qty, a.price, s.close_ts - 2, cid)
             except Exception as e:                                    # noqa: BLE001
+                self.olog("bid_error", s, a.side, a.price, qty, cid, latency_ms=(time.perf_counter() - t0) * 1000,
+                          note=str(e)[:200])
                 st.order = None                                       # nothing is resting: don't track a phantom
                 s.place_errors += 1
                 msg = str(e)
@@ -452,19 +477,23 @@ class Engine:
                 st.note = "order rejected: " + str(e)
                 self.event("error", s.coin, f"bid {a.side.upper()} {a.price:g}c rejected: {msg}")
                 return
+            lat = (time.perf_counter() - t0) * 1000
             if r.get("rejected"):                                     # normal in a fast market: retry next update
+                self.olog("bid_not_placed", s, a.side, a.price, qty, cid, latency_ms=lat, note=r["rejected"][:200])
                 st.order = None
                 st.note = r["rejected"]
                 self.event("info", s.coin, f"bid {a.side.upper()} {a.price:g}c not placed: {r['rejected']}")
                 return
             s.place_errors = 0
             st.order.order_id = r.get("order_id", "")
+            self.olog("bid_ack", s, a.side, a.price, qty, cid, st.order.order_id, lat)
             if st.order.order_id:
                 self.order_kind[st.order.order_id] = "buy"
                 self.store.add_order(st.order.order_id, cid, s.ticker, "buy")
         else:
             st.order = Order(a.side, a.price, qty, time.time() * 1000 + PAPER_LATENCY_MS, cid)
             s.queue = view.bid_size if joining else 0.0
+            self.olog("bid_paper", s, a.side, a.price, qty, cid, note=f"{a.reason}; queue ahead {s.queue:g}")
         st.side = a.side
         st.note = f"bid {a.side.upper()} {a.price:g}c x{qty}"
         self.event("bid", s.coin, f"{s.mode} bid {a.side.upper()} {a.price:g}c x{qty} ({a.reason})")
@@ -474,13 +503,19 @@ class Engine:
         if not st or not st.order:
             return
         o = st.order
+        self.olog("cancel_sent", s, o.side, o.price, o.qty - o.filled, o.client_id, o.order_id, note=reason)
+        t0 = time.perf_counter()
         if s.mode == "live" and o.order_id:
             for attempt in range(2):
                 try:
                     await self.rest.cancel(o.order_id, s.ticker)
+                    self.olog("cancel_ack", s, o.side, o.price, "", o.client_id, o.order_id,
+                              (time.perf_counter() - t0) * 1000)
                     break
                 except KalshiError as e:
                     if e.status == 404:               # already gone (filled or expired); fills arrive on the feed
+                        self.olog("cancel_gone", s, o.side, o.price, "", o.client_id, o.order_id,
+                                  (time.perf_counter() - t0) * 1000, "order already gone (filled or expired)")
                         break
                     if attempt == 1:
                         self.event("error", s.coin, f"cancel failed twice ({e}) - cancelling everything and halting")
@@ -499,7 +534,12 @@ class Engine:
             await self._cancel(s, "stop")
         st.last_sell_ms = time.time() * 1000
         if s.mode == "live":
-            r = await self.rest.sell_ioc(s.ticker, a.side, st.held, a.price, "fms-" + uuid.uuid4().hex[:20])
+            cid = "fms-" + uuid.uuid4().hex[:20]
+            self.olog("stop_sell_sent", s, a.side, a.price, st.held, cid, note=a.reason)
+            t0 = time.perf_counter()
+            r = await self.rest.sell_ioc(s.ticker, a.side, st.held, a.price, cid)
+            self.olog("stop_sell_ack", s, a.side, r.get("avg_price_c"), r.get("fill_count"), cid, r.get("order_id", ""),
+                      (time.perf_counter() - t0) * 1000)
             if r.get("order_id"):
                 self.order_kind[r["order_id"]] = "sell"
                 self.store.add_order(r["order_id"], "", s.ticker, "sell")
@@ -513,6 +553,7 @@ class Engine:
             st.sold += n
             st.held = 0
             st.proceeds_c += n * px - fee
+            self.olog("stop_sell_paper", s, a.side, px, n, note=a.reason)
             self.event("stop", s.coin, f"paper stop sold {n} {a.side.upper()} at {px:g}c - {a.reason}")
         if st.held == 0:
             st.exiting = False
@@ -552,6 +593,7 @@ class Engine:
                 got = int(min(rem, -s.queue))
                 s.queue = 0
         if got > 0:
+            self.olog("fill_paper", s, o.side, o.price, got, o.client_id, note=f"trade {cnt:g} at {px:g}c")
             self._apply_buy(s, got, o.price, 0.0)
             o.filled += got
             if o.filled >= o.qty:
@@ -590,6 +632,7 @@ class Engine:
         yes_px = dollars_c(m.get("yes_price_dollars", 0))
         px = yes_px if side == "yes" else 100 - yes_px
         fee = float(m.get("fee_cost") or 0) * 100
+        self.olog("fill_" + kind, s, side, px, n, cid, oid, note=f"fee {fee:.2f}c; trade {tid}")
         if kind == "buy":
             self._apply_buy(s, n, px, fee)
             o = s.st.order

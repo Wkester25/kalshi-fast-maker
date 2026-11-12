@@ -2,14 +2,16 @@
 event loop as the engine, so every change takes effect immediately."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
+import re
 import time
 from pathlib import Path
 
 from aiohttp import web
 
-from . import __version__, config
+from . import __version__, config, store as store_mod
 from .kalshi import Signer
 
 STATIC = Path(__file__).parent / "static"
@@ -261,6 +263,9 @@ def build(engine) -> web.Application:
                     cfg["news_skip"]["times_et"] = times
                 else:
                     errs.append("news times like 08:30, 10:00")
+        for k in ("record", "record_depth", "record_orders"):
+            if k in body:
+                cfg[k] = bool(body[k])                     # the recorder reads these live
         if "env" in body and body["env"] in ("real", "demo") and body["env"] != cfg["env"]:
             cfg["env"] = body["env"]
             errs.append("exchange changed - restart the program for it to take effect")
@@ -311,6 +316,43 @@ def build(engine) -> web.Application:
         engine.event("warn", "", f"result row {rid} removed by hand")
         return web.json_response({"ok": True})
 
+    # ---- data: recording switches live in /api/settings; listing and downloads here
+    export_lock = asyncio.Lock()                       # one export at a time: never compete with the bot for disk
+
+    async def data_info(_):
+        loop = asyncio.get_running_loop()
+        days = await loop.run_in_executor(None, store_mod.list_days)
+        return web.json_response({"days": days, "recorder": engine.rec.stats(),
+                                  "disk_free_gb": round(store_mod.disk_free_gb(), 1),
+                                  "switches": {k: bool(cfg.get(k, True)) for k in ("record", "record_depth", "record_orders")}})
+
+    def _exports_dir():
+        d = config.DATA / "exports"
+        d.mkdir(parents=True, exist_ok=True)
+        for f in d.iterdir():                              # keep only the newest few exports
+            if f.is_file() and time.time() - f.stat().st_mtime > 3600:
+                f.unlink(missing_ok=True)
+        return d
+
+    async def data_day(request):
+        day = request.match_info["day"]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or not (config.DATA / "rec" / day).is_dir():
+            return web.json_response({"error": "no recordings for that day"}, status=404)
+        async with export_lock:
+            out = _exports_dir() / f"fastmaker-{day}.zip"
+            await asyncio.get_running_loop().run_in_executor(None, store_mod.zip_day, day, out)
+        return web.FileResponse(out, headers={"Content-Disposition": f'attachment; filename="{out.name}"'})
+
+    async def data_table(request):
+        name = request.match_info["name"]
+        if name not in store_mod.EXPORT_TABLES:
+            return web.json_response({"error": "unknown table"}, status=404)
+        async with export_lock:
+            out = _exports_dir() / f"fastmaker-{name}-{time.strftime('%Y%m%d-%H%M')}.csv"
+            await asyncio.get_running_loop().run_in_executor(None, store_mod.export_table, engine.store.path, name, out)
+        return web.FileResponse(out, headers={"Content-Disposition": f'attachment; filename="{out.name}"',
+                                              "Content-Type": "text/csv"})
+
     async def stop_all(_):
         await engine.halt("Stop all pressed")
         return web.json_response({"ok": True})
@@ -343,6 +385,9 @@ def build(engine) -> web.Application:
     app.router.add_post("/api/keys/test", key_test)
     app.router.add_post("/api/stop-all", stop_all)
     app.router.add_post("/api/results/recheck", results_recheck)
+    app.router.add_get("/api/data", data_info)
+    app.router.add_get("/api/data/day/{day}", data_day)
+    app.router.add_get("/api/data/table/{name}", data_table)
     app.router.add_post("/api/results/delete", results_delete)
     app.router.add_post("/api/password", password)
     app.router.add_static("/static/", STATIC)

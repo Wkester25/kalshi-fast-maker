@@ -236,3 +236,5 @@ tr:hover .row-del { opacity: 1; }
 .size-eff { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
 .size-now { padding: 8px 0; font-weight: 600; }
 .size-now span { color: var(--muted); font-weight: 400; }
+a.btn { text-decoration: none; color: inherit; }
+a.btn.primary { color: var(--accent-ink); }

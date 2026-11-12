@@ -155,6 +155,29 @@ $("#z-restart").onclick = async () => {
   await quickSave({ sizing: { restart: true } }, "Profit count restarted");
 };
 
+/* ---------------- data tab */
+const fmtBytes = (b) => b > 1e9 ? (b / 1e9).toFixed(2) + " GB" : b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1e3)) + " kB";
+async function loadData() {
+  const d = await api("/api/data");
+  if (d.error) return;
+  $$("[data-rec]").forEach((i) => (i.checked = !!d.switches[i.dataset.rec]));
+  const r = d.recorder;
+  $("#rec-health").innerHTML = `
+    <div class="status-box"><span class="dot ${r.dropped ? "warn" : "good"}"></span><span>${r.written.toLocaleString()} rows written since start${r.dropped ? ` · <b>${r.dropped.toLocaleString()} dropped</b> (writer fell behind or disk problem)` : " · none dropped"} · ${r.queued.toLocaleString()} waiting</span></div>
+    <div class="status-box"><span class="dot ${d.disk_free_gb < 5 ? "warn" : "good"}"></span><span>${d.disk_free_gb} GB free on the server</span></div>`;
+  $("#days").innerHTML = d.days.length ? d.days.map((x) => `<tr><td class="num">${x.day}</td><td class="n">${x.files}</td><td class="n">${fmtBytes(x.bytes)}</td>
+      <td class="n"><a class="btn sm" href="/api/data/day/${x.day}" download>Download .zip</a></td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">Nothing recorded yet.</td></tr>`;
+}
+$$("[data-rec]").forEach((i) => (i.onchange = async () => {
+  await quickSave({ [i.dataset.rec]: i.checked }, `${i.closest("label").querySelector("b").textContent} recording ${i.checked ? "on" : "off"}`);
+  loadData();
+}));
+$("#data-refresh").onclick = loadData;
+$$("#tabs button").forEach((b) => b.addEventListener("click", () => { if (b.dataset.v === "data") loadData(); }));
+setInterval(() => { if (!document.hidden && $("#v-data").classList.contains("on")) loadData(); }, 5000);
+try { if (localStorage.getItem("fm-tab") === "data") loadData(); } catch { /* storage off */ }
+
 /* ---------------- render */
 function render() {
   const s = S;
