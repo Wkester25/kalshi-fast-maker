@@ -453,3 +453,37 @@ def test_live_order_uses_multiplier(home):
             await eng.stop()
             await runner.cleanup()
     asyncio.run(go())
+
+
+def test_book_not_recorded_after_close(home):
+    import gzip
+    import csv as _csv
+    async def go():
+        port = free_port()
+        point_at(port)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="paper", trading=False)
+        eng = Engine(cfg)
+        await eng.start()
+        try:
+            gold = eng.slots["GOLD"]
+            assert await wait_for(lambda: gold.book and gold.book.ready, 5)
+            t = gold.ticker
+            await fake.delta(t, "yes", 96.3, 7.123456)                  # before the close: recorded, rounded
+            await asyncio.sleep(0.2)
+            gold.close_ts = time.time() - 0.01                          # the market has just closed
+            await fake.delta(t, "no", 0.5, 999)                         # after: ignored
+            await asyncio.sleep(0.2)
+            eng.rec.close()
+            day = eng.rec.day
+            rows = list(_csv.reader(gzip.open(store.DATA / "rec" / day / "book.csv.gz", "rt")))
+            mine = [r for r in rows[1:] if r[1] == t]
+            assert mine and all(len(x.split(".")[-1]) <= 2 for r in mine for x in r[2:] if x)
+            assert not any(r[4] == "99.5" for r in mine)                # the post-close change isn't there
+        finally:
+            await eng.stop()
+            await runner.cleanup()
+    asyncio.run(go())

@@ -242,8 +242,8 @@ class Engine:
         m = d.get("msg") or {}
         if t in ("orderbook_snapshot", "orderbook_delta"):
             s = self.by_ticker.get(m.get("market_ticker", ""))
-            if not s or not s.book:
-                return
+            if not s or not s.book or recv_ms / 1000 >= s.close_ts:
+                return                                     # after the close the book is just orders being pulled
             before = s.book.view("yes")
             if t == "orderbook_snapshot":
                 s.book.snapshot(m, recv_ms)
@@ -251,7 +251,9 @@ class Engine:
                 s.book.delta(m, recv_ms)
             after = s.book.view("yes")
             if (before.bid, before.ask, before.bid_size, before.ask_size) != (after.bid, after.ask, after.bid_size, after.ask_size):
-                self.rec.write("book", [int(recv_ms), s.ticker, after.bid, after.bid_size, after.ask, after.ask_size])
+                r2 = lambda x: None if x is None else round(x, 2)   # noqa: E731  (no float noise in the files)
+                self.rec.write("book", [int(recv_ms), s.ticker, r2(after.bid), r2(after.bid_size),
+                                        r2(after.ask), r2(after.ask_size)])
             self.evaluate(s, recv_ms)
         elif t == "trade":
             tk = m.get("market_ticker", "")
