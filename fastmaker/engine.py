@@ -88,9 +88,11 @@ class Slot:
 
 @dataclass
 class Pending:
-    """A finished window that still needs its result."""
+    """A finished window that still needs its result (to settle a position, or just to record it)."""
     slot: Slot
     since: float
+    traded: bool = True
+    next_try: float = 0.0
 
 
 class Engine:
@@ -189,9 +191,10 @@ class Engine:
                 if s.ticker:                           # window over: hand to settlement, start fresh
                     if s.st and s.st.order:
                         await self._cancel(s, "window closed")
-                    if s.st and (s.st.held > 0 or s.st.sold > 0):
-                        # a copy: this slot object is reused for the next window right below
-                        self.pending.append(Pending(copy.copy(s), now))
+                    # a copy: this slot object is reused for the next window right below. Markets we didn't trade
+                    # are queued too, so every result gets recorded (analysis needs them all, not just ours)
+                    traded = bool(s.st and (s.st.held > 0 or s.st.sold > 0))
+                    self.pending.append(Pending(copy.copy(s), now, traded))
                     self.by_ticker.pop(s.ticker, None)
                     await self.feed.drop_markets([s.ticker])
                     s.ticker, s.st, s.book = "", None, None
@@ -452,16 +455,33 @@ class Engine:
         joining = view.bid is not None and abs(a.price - view.bid) < 1e-6
         if s.mode == "live":
             ok, msg = await self.rest.ensure_shard_cash(s.ticker, qty * a.price)
-            if msg:
-                self.event("info" if ok else "warn", s.coin, msg)
             if not ok:
+                # say it once per market window, then wait 10 s instead of asking again on every book update
+                if not st.note.startswith("not enough cash"):
+                    self.event("warn", s.coin, msg)
                 st.note = msg
+                st.cooldown_until_ms = time.time() * 1000 + 10_000
                 return
+            if msg:
+                self.event("info", s.coin, msg)
+            # wait for a rate-limit slot first, then make sure the bid still makes sense before it goes out
+            tw = time.perf_counter()
+            await self.rest.limiter.take(True)
+            waited = (time.perf_counter() - tw) * 1000
+            ok_now, why = self.can_trade(s)
+            if not ok_now:
+                st.note = why
+                return
+            if waited > 50 and s.book and s.book.ready:      # the market may have moved while we waited
+                now_v = s.book.view(a.side)
+                if (now_v.bid, now_v.ask) != (view.bid, view.ask):
+                    st.note = "market moved while waiting for a request slot - re-deciding"
+                    return
             st.order = Order(a.side, a.price, qty, time.time() * 1000, cid)
             self.olog("bid_sent", s, a.side, a.price, qty, cid, note=a.reason)
             t0 = time.perf_counter()
             try:
-                r = await self.rest.place_bid(s.ticker, a.side, qty, a.price, s.close_ts - 2, cid)
+                r = await self.rest.place_bid(s.ticker, a.side, qty, a.price, s.close_ts - 2, cid, prepaid=True)
             except Exception as e:                                    # noqa: BLE001
                 self.olog("bid_error", s, a.side, a.price, qty, cid, latency_ms=(time.perf_counter() - t0) * 1000,
                           note=str(e)[:200])
@@ -485,6 +505,7 @@ class Engine:
                 self.event("info", s.coin, f"bid {a.side.upper()} {a.price:g}c not placed: {r['rejected']}")
                 return
             s.place_errors = 0
+            self.rest.spent(s.ticker, qty * a.price)
             st.order.order_id = r.get("order_id", "")
             self.olog("bid_ack", s, a.side, a.price, qty, cid, st.order.order_id, lat)
             if st.order.order_id:
@@ -692,8 +713,9 @@ class Engine:
         now = time.time()
         for p in list(self.pending):
             s = p.slot
-            if now < s.close_ts + SETTLE_AFTER_S:
+            if now < s.close_ts + SETTLE_AFTER_S or now < p.next_try:
                 continue
+            p.next_try = now + (3 if p.traded else 15)     # untraded markets: no hurry, fewer requests
             try:
                 m = await self.rest.market(s.ticker) or {}
             except KalshiError:
@@ -701,8 +723,13 @@ class Engine:
             res = str(m.get("result", "")).lower()
             if res not in ("yes", "no"):
                 if now - p.since > 3 * 3600:
-                    self.event("warn", s.coin, f"no result for {s.ticker} after 3 h - dropped")
+                    if p.traded:
+                        self.event("warn", s.coin, f"no result for {s.ticker} after 3 h - dropped")
                     self.pending.remove(p)
+                continue
+            if not p.traded:
+                self.rec.write("market", [int(now * 1000), s.coin, s.ticker, s.open_ts, s.close_ts, s.strike, res])
+                self.pending.remove(p)
                 continue
             st = s.st
             won = res == st.side
@@ -782,6 +809,7 @@ class Engine:
             "halted": self.halted, "has_key": self.rest.has_key, "key_error": self.rest.key_error,
             "feed": self.feed.state, "msgs": self.feed.msgs, "skew_ms": self.feed.skew_ms,
             "rest_ms": self.rest.rtt_ms, "uptime_s": now - self.started,
+            "throttle_wait_ms": round(self.rest.limiter.waited_ms),
             "today": self.store.summary(mode, et_day()), "all": self.store.summary(mode),
             "other_today": self.store.summary("paper" if mode == "live" else "live", et_day()),
             "open_risk_c": self.open_risk_c(), "markets": rows, "sizing": self.sizing(),

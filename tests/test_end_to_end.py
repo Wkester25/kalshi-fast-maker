@@ -246,7 +246,7 @@ def test_post_only_cross_is_retried_and_post_only_kept(home):
         await eng.start()
         try:
             gold = eng.slots["GOLD"]
-            assert await wait_for(lambda: any(o["ticker"] == gold.ticker for o in fake.orders), 5)
+            assert await wait_for(lambda: any(o["ticker"] == gold.ticker for o in fake.orders), 15)
             assert fake.orders_rejected_cross >= 1
             assert all(o.get("post_only") is True for o in fake.orders)   # never resent as a taker order
             assert gold.place_errors == 0
@@ -567,6 +567,63 @@ def test_depth_and_order_timing_and_downloads(home):
             assert r["ok"] and not eng.rec.on("depth") and eng.rec.on("orders")
         finally:
             await client.close()
+            await eng.stop()
+            await runner.cleanup()
+    asyncio.run(go())
+
+
+def test_limiter_lets_urgent_calls_through():
+    from fastmaker.kalshi import Limiter
+
+    async def go():
+        lim = Limiter(reads_per_s=5, writes_per_s=2)
+        t0 = time.monotonic()
+        for _ in range(2):
+            await lim.take(True)                     # the bucket's two tokens
+        await lim.take(True, urgent=True)            # urgent: goes now, bucket below zero
+        assert time.monotonic() - t0 < 0.1
+        await lim.take(True)                         # ordinary: waits for the bucket to refill
+        assert time.monotonic() - t0 >= 0.9
+    asyncio.run(go())
+
+
+def test_cash_checked_sparingly_and_untraded_results_recorded(home):
+    import csv as _csv
+    import gzip
+
+    async def go():
+        port = free_port()
+        point_at(port)
+        fake = FakeKalshi(secs_into_window=600, ranges=TAPERED)
+        runner = await serve(fake, port)
+        config.save_key("k", pem())
+        cfg = config.load()
+        cfg.update(env="fake", mode="live", trading=True)
+        cfg["rules"]["crypto"]["enabled"] = True
+        eng = Engine(cfg)
+        await eng.start()
+        try:
+            assert await wait_for(lambda: len(fake.orders) >= 4, 5)
+            assert fake.balance_calls <= 3, fake.balance_calls       # one look serves many bids
+            btc = eng.slots["BTC"]                                    # never traded (below the band)
+            assert not (btc.st and (btc.st.held or btc.st.order))
+            btc.close_ts = time.time()
+            assert await wait_for(lambda: any(p.slot.coin == "BTC" and not p.traded for p in eng.pending), 3)
+            fake.markets["KXBTC15M"]["result"] = "yes"
+            from fastmaker import engine as engmod
+            engmod.SETTLE_AFTER_S = -10_000
+            try:
+                await eng.settle_once()
+            finally:
+                engmod.SETTLE_AFTER_S = 10
+            assert not any(p.slot.coin == "BTC" and not p.traded for p in eng.pending)
+            assert not any(r["coin"] == "BTC" for r in eng.store.recent_results())   # no fake trade result
+            eng.rec.flush_now()
+            eng.rec.close()
+            d = store.DATA / "rec" / eng.rec.day
+            rows = [r for f in d.glob("market-*.csv.gz") for r in _csv.reader(gzip.open(f, "rt"))]
+            assert any(r[1] == "BTC" and r[6] == "yes" for r in rows)
+        finally:
             await eng.stop()
             await runner.cleanup()
     asyncio.run(go())

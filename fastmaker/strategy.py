@@ -196,7 +196,7 @@ def decide(rule: dict, st: State, secs: float, now_ms: float, view, fav: str | N
     if now_ms < st.cooldown_until_ms:
         if st.order:
             acts.append(Action("cancel", reason="paused"))
-        st.note = st.note if st.note.startswith("order rejected") else "paused after a fast drop"
+        st.note = st.note if st.note.startswith(("order rejected", "not enough cash")) else "paused after a fast drop"
         return acts
 
     # ---- band

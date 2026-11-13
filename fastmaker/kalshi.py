@@ -63,6 +63,40 @@ class Signer:
 
 
 # ------------------------------------------------------------------- REST
+class Limiter:
+    """Keeps the bot under Kalshi's request limits (it was getting 'too many requests' when several markets
+    bid at once). Token buckets for reads and writes; urgent calls (cancels, stop sells) never wait - they go
+    straight out and the ordinary calls behind them wait a little longer instead."""
+
+    def __init__(self, reads_per_s: float = 15.0, writes_per_s: float = 8.0):
+        self.rate = {"r": reads_per_s, "w": writes_per_s}
+        self.tokens = dict(self.rate)
+        self.t = {"r": time.monotonic(), "w": time.monotonic()}
+        self.hold_until = 0.0                          # after a 429 everyone non-urgent waits a moment
+        self.waited_ms = 0.0
+
+    def _refill(self, k: str) -> None:
+        now = time.monotonic()
+        self.tokens[k] = min(self.rate[k], self.tokens[k] + (now - self.t[k]) * self.rate[k])
+        self.t[k] = now
+
+    async def take(self, write: bool, urgent: bool = False) -> None:
+        k = "w" if write else "r"
+        t0 = time.monotonic()
+        while not urgent:
+            self._refill(k)
+            now = time.monotonic()
+            if self.tokens[k] >= 1 and now >= self.hold_until:
+                break
+            await asyncio.sleep(max(self.hold_until - now, (1 - self.tokens[k]) / self.rate[k], 0.01))
+        self._refill(k)
+        self.tokens[k] -= 1                            # urgent calls may take it below zero
+        self.waited_ms += (time.monotonic() - t0) * 1000
+
+    def throttled(self) -> None:
+        self.hold_until = time.monotonic() + 1.0
+
+
 class Rest:
     def __init__(self, env: str = "real"):
         self.env = env
@@ -72,6 +106,9 @@ class Rest:
         self.session: aiohttp.ClientSession | None = None
         self.rtt_ms: float | None = None                   # last measured REST round trip
         self._shards: dict[str, int] = {}
+        self.limiter = Limiter()
+        self._cash: dict[int, float] = {}
+        self._cash_t = 0.0
         self.post_only = True
         self.load_key()
 
@@ -100,8 +137,9 @@ class Rest:
             await self.session.close()
 
     async def request(self, method: str, path: str, params: dict | None = None, body: dict | None = None,
-                      auth: bool = True, timeout: float = 8.0) -> dict:
+                      auth: bool = True, timeout: float = 8.0, urgent: bool = False) -> dict:
         await self.open()
+        await self.limiter.take(method != "GET", urgent)
         if auth and not self.signer:
             raise KalshiError(self.key_error or "no API key")
         last = None
@@ -117,8 +155,10 @@ class Rest:
                         raw = await r.read()
                         self.rtt_ms = (time.perf_counter() - t0) * 1000
                         self.base = b
+                        if r.status == 429:
+                            self.limiter.throttled()
                         if r.status == 429 and attempt < 2:     # rate limited: not processed, safe to retry
-                            await asyncio.sleep(0.5 * (attempt + 1))
+                            await asyncio.sleep(0.25 if urgent else 0.5 * (attempt + 1))
                             continue
                         if r.status < 400:
                             return json.loads(raw) if raw else {}
@@ -165,7 +205,10 @@ class Rest:
     async def balance(self) -> dict:
         return await self.request("GET", "/portfolio/balance")
 
-    async def shard_cash(self) -> dict[int, float]:
+    async def shard_cash(self, max_age: float = 0.0) -> dict[int, float]:
+        """Cash per exchange shard (cents). With max_age, a copy that recent is reused instead of asking again."""
+        if max_age and self._cash and time.monotonic() - self._cash_t < max_age:
+            return dict(self._cash)
         b = await self.balance()
         out = {}
         for x in b.get("balance_breakdown") or []:
@@ -176,7 +219,14 @@ class Rest:
         if not out:
             v = b.get("balance_dollars")
             out[0] = float(v) * 100 if v not in (None, "") else float(b.get("balance", 0))
+        self._cash, self._cash_t = dict(out), time.monotonic()
         return out
+
+    def spent(self, ticker: str, cents: float) -> None:
+        """Keep the cached cash honest after we place an order (the next real check corrects any drift)."""
+        k = self._shards.get(ticker)
+        if k is not None and k in self._cash:
+            self._cash[k] -= cents
 
     async def market_shard(self, ticker: str) -> int:
         if ticker not in self._shards:
@@ -190,10 +240,15 @@ class Rest:
     async def ensure_shard_cash(self, ticker: str, need_c: float) -> tuple[bool, str]:
         """Kalshi keeps cash per exchange shard and orders aren't funded from the others."""
         dst = await self.market_shard(ticker)
-        cash = await self.shard_cash()
+        cash = await self.shard_cash(max_age=3.0)          # not a balance request before every single bid
         have = cash.get(dst, 0.0)
         if have >= need_c:
             return True, ""
+        if time.monotonic() - self._cash_t > 0.5:          # the copy may be stale: look once more
+            cash = await self.shard_cash()
+            have = cash.get(dst, 0.0)
+            if have >= need_c:
+                return True, ""
         want, moved = need_c * 4 - have, 0
         for src, amt in sorted(cash.items(), key=lambda kv: -kv[1]):
             if src == dst or amt <= 0 or moved >= want:
@@ -204,13 +259,15 @@ class Rest:
                 "source_exchange_shard": src, "destination_exchange_shard": dst,
                 "amount": step * 100, "client_transfer_id": str(uuid.uuid4())})
             moved += step
+        self._cash_t = 0.0                                 # transfers change it: ask fresh next time
         if moved <= 0:
             return False, f"not enough cash (shard {dst} has ${have / 100:.2f})"
         return True, f"moved ${moved / 100:.2f} to shard {dst}"
 
     # ---- orders (V2 books are quoted in YES: buying NO at p = asking YES at 100 - p)
     async def place_bid(self, ticker: str, side: str, count: int, price_c: float, expires_ts: float,
-                        client_id: str) -> dict:
+                        client_id: str, prepaid: bool = False) -> dict:
+        """prepaid: the caller already waited for a rate-limit slot (so it could re-check before sending)."""
         yes_px = round(price_c if side == "yes" else 100 - price_c, 4)
         body = {"ticker": ticker, "side": "bid" if side == "yes" else "ask", "count": f"{int(count)}.00",
                 "price": f"{yes_px / 100:.4f}", "time_in_force": "good_till_canceled",
@@ -219,7 +276,7 @@ class Rest:
         if self.post_only:
             body["post_only"] = True
         try:
-            r = await self.request("POST", "/portfolio/events/orders", body=body, timeout=4)
+            r = await self.request("POST", "/portfolio/events/orders", body=body, timeout=4, urgent=prepaid)
         except KalshiError as e:
             msg = str(e).lower()
             # the market moved onto our price before the order arrived: post-only refuses to trade as taker
@@ -236,7 +293,7 @@ class Rest:
         body = {"ticker": ticker, "side": "ask" if side == "yes" else "bid", "count": f"{int(count)}.00",
                 "price": f"{yes_px / 100:.4f}", "time_in_force": "immediate_or_cancel", "reduce_only": True,
                 "self_trade_prevention_type": "taker_at_cross", "client_order_id": client_id or str(uuid.uuid4())}
-        r = await self.request("POST", "/portfolio/events/orders", body=body, timeout=4)
+        r = await self.request("POST", "/portfolio/events/orders", body=body, timeout=4, urgent=True)
         r = r.get("order", r) if isinstance(r, dict) else {}
         got = int(float(r.get("fill_count_fp") or r.get("fill_count") or 0))
         afp = r.get("average_fill_price")
@@ -249,7 +306,7 @@ class Rest:
 
     async def cancel(self, order_id: str, ticker: str) -> dict:
         # the ticker routes the cancel to the right exchange shard
-        return await self.request("DELETE", f"/portfolio/events/orders/{order_id}", {"market_ticker": ticker},
+        return await self.request("DELETE", f"/portfolio/events/orders/{order_id}", {"market_ticker": ticker}, urgent=True,
                                   timeout=4)
 
     async def fills(self, ticker: str | None = None, min_ts: int | None = None) -> list[dict]:

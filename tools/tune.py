@@ -52,6 +52,7 @@ TAPERED = [(0.0, 10.0, 0.1), (10.0, 90.0, 1.0), (90.0, 100.0, 0.1)]
 
 PULL_GRID = [None] + [(d, ms, cd) for d in (0.5, 1.0, 1.5, 2.0, 3.0) for ms in (500, 1000, 2000, 4000)
                       for cd in (2000, 5000, 15000)]
+PULL_GRID_QUICK = [None] + [(d, ms, cd) for d in (1.0, 1.5, 2.5) for ms in (1000, 3000) for cd in (3000, 15000)]
 STOP_MS_GRID = (0, 250, 500, 1000, 2000, 3000, 5000, 10000)
 
 
@@ -126,21 +127,51 @@ def _reorder(arrs: list, key: array) -> None:
         a[:] = b
 
 
-def load(days: list[Path]) -> dict[str, Market]:
+def load_markets(days: list[Path]) -> dict[str, Market]:
+    """Every market's open/close and (where the bot recorded it) result. Small and fast."""
     mk: dict[str, Market] = {}
     for day in days:
         for r in _rows(day, "market"):
-            if len(r) < 7:
+            if len(r) < 7 or r[1] not in config.MARKETS:
                 continue
             m = mk.setdefault(r[2], Market(r[2]))
             m.coin, m.open, m.close = r[1], float(r[3]), float(r[4])
+            m.group = config.MARKETS[r[1]][1]
             if r[6] in ("yes", "no"):
                 m.result = r[6]
+    return mk
+
+
+def infer_result(m: Market) -> str:
+    """The bot only asks Kalshi for results of markets it traded. For the rest, the book in the last 20 s
+    before the close settles it: favourite bid >= 95c (checked against every recorded result: no misses)."""
+    hi = int(m.close * 1000) - 1000
+    i = bisect_right(m.bt, hi) - 1
+    if i < 0 or m.bt[i] < hi - 19_000:
+        return ""
+    if m.yb[i] == m.yb[i] and m.yb[i] >= 95:
+        return "yes"
+    if m.ya[i] == m.ya[i] and m.ya[i] <= 5:
+        return "no"
+    return ""
+
+
+def load_rows(days: list[Path], mk: dict[str, Market], from_s: dict[str, float]) -> dict[str, Market]:
+    """Book and trades only for the markets asked for, and only from `from_s` seconds into each market until
+    its close - what the replay needs. (A day is ~50 million book rows; loading all of it would need GBs.)"""
+    lo = {t: int((mk[t].open + max(from_s[t], 0)) * 1000) for t in from_s}
+    hi = {t: int(mk[t].close * 1000) - 500 for t in from_s}         # nothing after the bot lets go
+    mk = {t: Market(t, mk[t].coin, mk[t].group, mk[t].open, mk[t].close, mk[t].result) for t in from_s}  # fresh
+    for day in days:
         for r in _rows(day, "book"):
-            m = mk.get(r[1])
-            if m is None or len(r) < 6:
+            t = r[1]
+            if t not in lo or len(r) < 6:
                 continue
-            m.bt.append(int(r[0]))
+            ms = int(r[0])
+            if not lo[t] <= ms < hi[t]:
+                continue
+            m = mk[t]
+            m.bt.append(ms)
             m.yb.append(float(r[2]) if r[2] else NAN)
             m.ybs.append(float(r[3]) if r[3] else 0.0)
             m.ya.append(float(r[4]) if r[4] else NAN)
@@ -150,31 +181,42 @@ def load(days: list[Path]) -> dict[str, Market]:
                     if x and abs(float(x) - round(float(x))) > 1e-6:
                         m.fractional = True
         for r in _rows(day, "trade"):
-            m = mk.get(r[2])
-            if m is None or len(r) < 6 or not r[3]:
+            t = r[2]
+            if t not in lo or len(r) < 6 or not r[3]:
                 continue
-            m.tt.append(int(r[0]))
+            ms = int(r[0])
+            if not lo[t] <= ms < hi[t]:
+                continue
+            m = mk[t]
+            m.tt.append(ms)
             m.tp.append(float(r[3]))
             m.tc.append(float(r[4] or 0))
             m.tk.append(1 if r[5] == "yes" else 0)
     out = {}
-    for t, m in mk.items():
-        if not m.result or not m.open or m.coin not in config.MARKETS or not m.bt:
+    for t in from_s:
+        m = mk[t]
+        if not m.bt:
             continue
-        m.group = config.MARKETS[m.coin][1]
         _reorder([m.yb, m.ybs, m.ya, m.yas, m.bt], m.bt)
         _reorder([m.tp, m.tc, m.tk, m.tt], m.tt)
-        lo, hi = int(m.open * 1000), int(m.close * 1000) - 500     # nothing after the bot lets go of the market
-        for arrs, key in (([m.yb, m.ybs, m.ya, m.yas], m.bt), ([m.tp, m.tc, m.tk], m.tt)):
-            a, b = bisect_left(key, lo), bisect_left(key, hi)
-            for x in arrs:
-                del x[b:]
-                del x[:a]
-            del key[b:]
-            del key[:a]
-        if m.bt:
+        _dedupe(m)
+        if not m.result:
+            m.result = infer_result(m)
+        if m.result:
             out[t] = m
     return out
+
+
+def _dedupe(m: Market) -> None:
+    """Older daily files and the hourly files can overlap: drop exact repeats (they're adjacent once sorted)."""
+    def run(key, arrs):
+        keep = [i for i in range(len(key)) if i == 0 or key[i] != key[i - 1]
+                or any(a[i] != a[i - 1] and not (a[i] != a[i] and a[i - 1] != a[i - 1]) for a in arrs)]
+        if len(keep) != len(key):
+            for a in [key] + arrs:
+                a[:] = array(a.typecode, (a[i] for i in keep))
+    run(m.bt, [m.yb, m.ybs, m.ya, m.yas])
+    run(m.tt, [m.tp, m.tc, m.tk])
 
 
 def load_settings(path: Path) -> dict:
@@ -398,6 +440,7 @@ def main():
     ap.add_argument("--all-markets", action="store_true", help="include markets switched off in the dashboard")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--json", type=Path, help="also write the full results here")
+    ap.add_argument("--quick", action="store_true", help="13 fast-pull settings instead of 61 (much faster)")
     a = ap.parse_args()
 
     try:
@@ -410,10 +453,8 @@ def main():
         days = days[-a.days:]
     if not days:
         sys.exit(f"No recordings found under {a.data}")
-    t_load = time.time()
-    print(f"Loading {len(days)} day(s): {days[0].name} .. {days[-1].name}", flush=True)
-    markets = load(days)
-    print(f"  {len(markets)} settled markets with data ({time.time() - t_load:.0f} s)", flush=True)
+    print(f"Recordings: {len(days)} day(s), {days[0].name} .. {days[-1].name}", flush=True)
+    all_markets = load_markets(days)
 
     groups = [a.group] if a.group else [g for g in ("commodity", "crypto") if cfg["rules"][g]["enabled"]]
     if not groups:
@@ -422,9 +463,14 @@ def main():
     for g in groups:
         rule0 = cfg["rules"][g]
         wins = rule0["windows"]
-        tick = sorted((m.close, t) for t, m in markets.items() if m.group == g
-                      and (a.all_markets or cfg["markets"].get(m.coin)) and not news_blocked(cfg, m))
-        tickers = [t for _, t in tick]
+        want = [t for t, m in all_markets.items() if m.group == g
+                and (a.all_markets or cfg["markets"].get(m.coin)) and not news_blocked(cfg, m)]
+        t_load = time.time()
+        first = min(w["start_s"] for w in wins) - 60               # a minute of book before bidding opens
+        markets = load_rows(days, all_markets, {t: first for t in want})
+        print(f"\n{g}: loaded {len(markets)} settled markets ({time.time() - t_load:.0f} s; results the bot didn't "
+              f"record are read from the closing prices)", flush=True)
+        tickers = [t for _, t in sorted((markets[t].close, t) for t in markets)]
         # skip markets whose favourite never reaches any window's band while the window is open
         def reachable(m):
             for w in wins:
@@ -446,7 +492,7 @@ def main():
         cut = markets[split].close if split else float("inf")
         stop_grids = [[(sc, sm) for sc in stop_price_grid(w["lo_c"]) for sm in STOP_MS_GRID] for w in wins]
         cur_pull = (rule0["pull_drop_c"], rule0["pull_ms"], rule0["pull_cooldown_ms"]) if rule0.get("pull") else None
-        grid = list(dict.fromkeys(PULL_GRID + [cur_pull]))
+        grid = list(dict.fromkeys((PULL_GRID_QUICK if a.quick else PULL_GRID) + [cur_pull]))
         cur_stops = [(float(w["stop_c"]), int(w["stop_ms"])) for w in wins]
         for i, w in enumerate(wins):                       # make sure the current stop is in the grid
             if cur_stops[i] not in stop_grids[i]:

@@ -102,6 +102,7 @@ class FakeKalshi:
         return web.json_response({"error": {"message": "not found"}}, status=404)
 
     async def balance(self, r):
+        self.balance_calls = getattr(self, "balance_calls", 0) + 1
         if "KALSHI-ACCESS-SIGNATURE" not in r.headers:
             return web.json_response({"error": {"message": "unauthorized"}}, status=401)
         return web.json_response({"balance": 125000, "balance_dollars": "1250.00"})
