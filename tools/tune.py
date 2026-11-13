@@ -389,6 +389,11 @@ def _init(markets):
         pass
 
 
+def _run_one(item):
+    p, job = item
+    return p, _run_pull(job)
+
+
 def _run_pull(args):
     """All entries for one pull setting, then every stop setting for every resulting fill."""
     rule, tickers, stop_grids = args
@@ -509,8 +514,12 @@ def main():
         t_run = time.time()
         print(f"  replaying {len(grid)} fast-pull settings x {len(tickers)} markets "
               f"on {a.workers} worker(s) at low priority...", flush=True)
+        fills_by_pull = {}
         with Pool(a.workers, initializer=_init, initargs=(markets,)) as pool:
-            fills_by_pull = dict(zip(grid, pool.map(_run_pull, jobs)))
+            for k, (p, res) in enumerate(pool.imap_unordered(_run_one, [(p, j) for p, j in zip(grid, jobs)]), 1):
+                fills_by_pull[p] = res
+                el = time.time() - t_run
+                print(f"    {k}/{len(grid)} settings done, about {el / k * (len(grid) - k) / 60:.0f} min to go", flush=True)
         print(f"  done in {time.time() - t_run:.0f} s", flush=True)
 
         key_idx = [{k: n for n, k in enumerate(g_)} for g_ in stop_grids]

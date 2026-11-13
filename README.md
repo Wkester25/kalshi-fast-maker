@@ -107,7 +107,7 @@ python tools/tune.py --data path\to\folder --config path\to\a\copy\of\config.jso
 - Fills are simulated like paper mode. A stop sells at the bid less 0.5¢ plus the taker fee; otherwise the position settles on the market's result.
 - Fast pull is tuned per rule, because it's shared by the rule's windows. Each window gets its own stop.
 - Settings are picked on the earliest 70% of markets and judged on the latest 30%. A change is suggested only if it also beats your current settings on that held-out 30% with at least 30 fills. Otherwise the tuner says to keep your settings or collect more data.
-- It runs at the lowest CPU priority on all cores but one, so the bot isn't slowed. A busy day takes a few minutes and about 200 MB of memory.
+- It runs at the lowest CPU priority on all cores but one, so the bot isn't slowed. It loads only the rows the active windows need, and reads results the bot didn't record from the closing prices. Expect several minutes per rule per day of data on a 2-core server (a crypto rule with a long window is the slowest). `--quick` searches 13 fast-pull settings instead of 61, and the run prints how long is left.
 - Results are per contract. Daily loss limits and market caps aren't applied.
 
 ## Security
